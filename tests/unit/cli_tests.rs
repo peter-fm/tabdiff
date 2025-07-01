@@ -29,11 +29,12 @@ fn test_cli_init_command_with_force() {
 fn test_cli_snapshot_command() {
     let cli = Cli::try_parse_from(&["tabdiff", "snapshot", "data.csv", "--name", "test"]).unwrap();
     match cli.command {
-        Commands::Snapshot { input, name, sample, batch_size } => {
+        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
             assert_eq!(sample, "full");
             assert_eq!(batch_size, 10000);
+            assert!(!full_data);
         }
         _ => panic!("Expected Snapshot command"),
     }
@@ -49,11 +50,12 @@ fn test_cli_snapshot_command_with_options() {
     ]).unwrap();
     
     match cli.command {
-        Commands::Snapshot { input, name, sample, batch_size } => {
+        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
             assert_eq!(sample, "10%");
             assert_eq!(batch_size, 5000);
+            assert!(!full_data);
         }
         _ => panic!("Expected Snapshot command"),
     }
@@ -492,4 +494,71 @@ fn test_special_characters_in_names() {
         }
         _ => panic!("Expected Snapshot command"),
     }
+}
+
+#[test]
+fn test_cli_snapshot_with_full_data() {
+    let cli = Cli::try_parse_from(&[
+        "tabdiff", "snapshot", "data.csv", "--name", "test", "--full-data"
+    ]).unwrap();
+    
+    match cli.command {
+        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
+            assert_eq!(input, "data.csv");
+            assert_eq!(name, "test");
+            assert_eq!(sample, "full");
+            assert_eq!(batch_size, 10000);
+            assert!(full_data);
+        }
+        _ => panic!("Expected Snapshot command"),
+    }
+}
+
+#[test]
+fn test_cli_rollback_command() {
+    let cli = Cli::try_parse_from(&[
+        "tabdiff", "rollback", "data.csv", "--to", "baseline"
+    ]).unwrap();
+    
+    match cli.command {
+        Commands::Rollback { input, to, dry_run, force, backup } => {
+            assert_eq!(input, "data.csv");
+            assert_eq!(to, "baseline");
+            assert!(!dry_run);
+            assert!(!force);
+            assert!(backup);
+        }
+        _ => panic!("Expected Rollback command"),
+    }
+}
+
+#[test]
+fn test_cli_rollback_command_with_options() {
+    let cli = Cli::try_parse_from(&[
+        "tabdiff", "rollback", "data.csv", "--to", "baseline", 
+        "--dry-run", "--force"
+    ]).unwrap();
+    
+    match cli.command {
+        Commands::Rollback { input, to, dry_run, force, backup } => {
+            assert_eq!(input, "data.csv");
+            assert_eq!(to, "baseline");
+            assert!(dry_run);
+            assert!(force);
+            assert!(backup); // default is true
+        }
+        _ => panic!("Expected Rollback command"),
+    }
+}
+
+#[test]
+fn test_cli_rollback_missing_required_args() {
+    // Missing input file
+    assert!(Cli::try_parse_from(&["tabdiff", "rollback", "--to", "baseline"]).is_err());
+    
+    // Missing target snapshot
+    assert!(Cli::try_parse_from(&["tabdiff", "rollback", "data.csv"]).is_err());
+    
+    // Both missing
+    assert!(Cli::try_parse_from(&["tabdiff", "rollback"]).is_err());
 }

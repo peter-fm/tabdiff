@@ -40,8 +40,16 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
             json,
         } => status_command(workspace_path, &input, compare_to.as_deref(), &sample, quiet, json),
         Commands::List { format } => list_command(workspace_path, &format),
+        Commands::Rollback {
+            input,
+            to,
+            dry_run,
+            force,
+            backup,
+        } => rollback_command(workspace_path, &input, &to, dry_run, force, backup),
     }
 }
+
 
 /// Initialize tabdiff workspace
 fn init_command(workspace_path: Option<&Path>, force: bool) -> Result<()> {
@@ -73,6 +81,181 @@ fn init_command(workspace_path: Option<&Path>, force: bool) -> Result<()> {
     println!("📁 Workspace directory: {}", workspace.tabdiff_dir.display());
     
     Ok(())
+}
+
+/// Rollback a file to a previous snapshot state
+fn rollback_command(
+    workspace_path: Option<&Path>,
+    input: &str,
+    to: &str,
+    dry_run: bool,
+    force: bool,
+    backup: bool,
+) -> Result<()> {
+    let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
+    let resolver = SnapshotResolver::new(workspace.clone());
+
+    // Resolve target snapshot
+    let target_snapshot = {
+        let snap_ref = SnapshotRef::from_string(to.to_string());
+        resolver.resolve(&snap_ref)?
+    };
+
+    println!("🔄 Rolling back '{}' to snapshot '{}'...", input, target_snapshot.name);
+
+    // Load target snapshot data
+    let target_data = if target_snapshot.has_archive() {
+        SnapshotLoader::load_full_snapshot(target_snapshot.require_archive()?)?
+    } else {
+        return Err(crate::error::TabdiffError::archive("Target snapshot has no archive data"));
+    };
+
+    // Load current data
+    let input_path = if Path::new(input).is_absolute() {
+        Path::new(input).to_path_buf()
+    } else {
+        workspace.root.join(input)
+    };
+
+    if !input_path.exists() {
+        return Err(crate::error::TabdiffError::invalid_input(format!(
+            "Input file does not exist: {}", input_path.display()
+        )));
+    }
+
+    let data_processor = DataProcessor::new()?;
+    let current_data_info = data_processor.load_file(&input_path)?;
+    let current_row_data = data_processor.extract_all_data()?;
+
+    // Extract target schema from archive data
+    let target_schema = if let Some(schema_data) = target_data.schema_data.get("columns") {
+        if let Some(columns_array) = schema_data.as_array() {
+            let mut target_columns = Vec::new();
+            for col_value in columns_array {
+                if let (Some(name), Some(data_type), Some(nullable)) = (
+                    col_value.get("name").and_then(|v| v.as_str()),
+                    col_value.get("data_type").and_then(|v| v.as_str()),
+                    col_value.get("nullable").and_then(|v| v.as_bool())
+                ) {
+                    target_columns.push(crate::hash::ColumnInfo {
+                        name: name.to_string(),
+                        data_type: data_type.to_string(),
+                        nullable,
+                    });
+                }
+            }
+            target_columns
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Extract target row data from archive
+    let target_row_data = if let Some(rows_data) = target_data.row_data.get("rows") {
+        if let Some(rows_array) = rows_data.as_array() {
+            let mut target_rows = Vec::new();
+            for row_value in rows_array {
+                if let Some(row_array) = row_value.as_array() {
+                    let row: Vec<String> = row_array
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect();
+                    target_rows.push(row);
+                }
+            }
+            target_rows
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Detect changes needed to rollback
+    let changes = ChangeDetector::detect_changes(
+        &current_data_info.columns,
+        &current_row_data,
+        &target_schema,
+        &target_row_data,
+    )?;
+
+    // Check if there are any changes to apply
+    if !changes.schema_changes.has_changes() && !changes.row_changes.has_changes() {
+        println!("✅ File is already at the target snapshot state. No rollback needed.");
+        return Ok(());
+    }
+
+    // Show what will be changed
+    if dry_run {
+        println!("🔍 Dry run - showing what would be changed:");
+        PrettyPrinter::print_comprehensive_status_results(&changes, false);
+        println!("\n💡 Use --force to apply these changes");
+        return Ok(());
+    }
+
+    // Show changes and ask for confirmation
+    if !force {
+        println!("📋 The following changes will be applied:");
+        PrettyPrinter::print_comprehensive_status_results(&changes, false);
+        
+        println!("\n⚠️  This will modify your file. Continue? (y/N)");
+        let mut user_input = String::new();
+        std::io::stdin().read_line(&mut user_input)?;
+        
+        if !user_input.trim().to_lowercase().starts_with('y') {
+            println!("❌ Rollback cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Create backup if requested
+    if backup {
+        let backup_path = format!("{}.backup", input_path.display());
+        std::fs::copy(&input_path, &backup_path)?;
+        println!("💾 Backup created: {}", backup_path);
+    }
+
+    // Apply the rollback by writing the target data
+    let target_csv_content = create_csv_content(&target_schema, &target_row_data)?;
+    std::fs::write(&input_path, target_csv_content)?;
+
+    let snapshot_name = &target_snapshot.name;
+    println!("✅ Rollback completed successfully!");
+    println!("📄 File '{}' has been rolled back to snapshot '{}'", input, snapshot_name);
+
+    Ok(())
+}
+
+/// Create CSV content from schema and row data
+fn create_csv_content(schema: &[crate::hash::ColumnInfo], rows: &[Vec<String>]) -> Result<String> {
+    let mut content = String::new();
+    
+    // Write header
+    let headers: Vec<&str> = schema.iter().map(|col| col.name.as_str()).collect();
+    content.push_str(&headers.join(","));
+    content.push('\n');
+    
+    // Write rows
+    let empty_string = String::new();
+    for row in rows {
+        // Ensure row has the right number of columns
+        let mut row_values = Vec::new();
+        for (i, _col) in schema.iter().enumerate() {
+            let value = row.get(i).unwrap_or(&empty_string);
+            // Escape CSV values if they contain commas or quotes
+            if value.contains(',') || value.contains('"') || value.contains('\n') {
+                row_values.push(format!("\"{}\"", value.replace('"', "\"\"")));
+            } else {
+                row_values.push(value.clone());
+            }
+        }
+        content.push_str(&row_values.join(","));
+        content.push('\n');
+    }
+    
+    Ok(content)
 }
 
 /// Create a snapshot

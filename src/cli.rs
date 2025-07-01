@@ -110,6 +110,28 @@ pub enum Commands {
         #[arg(long, default_value = "pretty")]
         format: String,
     },
+    
+    /// Rollback a file to a previous snapshot state
+    Rollback {
+        /// Input file to rollback
+        input: String,
+        
+        /// Snapshot to rollback to
+        #[arg(long)]
+        to: String,
+        
+        /// Show what would be changed without applying (dry run)
+        #[arg(long)]
+        dry_run: bool,
+        
+        /// Skip confirmation prompts
+        #[arg(long)]
+        force: bool,
+        
+        /// Create backup before rollback
+        #[arg(long, default_value = "true")]
+        backup: bool,
+    },
 }
 
 /// Parse sampling strategy string into structured format
