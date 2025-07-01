@@ -16,6 +16,7 @@ pub mod commands;
 pub mod output;
 pub mod progress;
 pub mod git;
+pub mod change_detection;
 
 pub use error::{Result, TabdiffError};
 pub use workspace::TabdiffWorkspace;

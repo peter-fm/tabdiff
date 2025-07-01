@@ -1,0 +1,23 @@
+{
+  "format_version": "1.0.0",
+  "name": "fixed_baseline",
+  "created": "2025-07-01T21:20:04.828229Z",
+  "source": "/Users/pete/LocalFiles/tabdiff/test_data/ratings_summary.csv",
+  "source_hash": "30fe6ff8bf72d4a0158a72f7b46b4dd0de388ac37bf3efc001974dd5cc756de2",
+  "row_count": 5,
+  "column_count": 4,
+  "schema_hash": "c2685a1fc712f977a44bacf47aea775f859321c6a744e57cb388e50aa6185ef8",
+  "columns": {
+    "product_id": "17ad01b9e0820c6e50792bc5db66a74158fc5d6051fbae0f496ec78b01268277",
+    "count": "f78a68c5bac47db8caaa8d4d08fecae64b324ee34a41dbb5ddd84b52faf0b4e8",
+    "rating": "c0ca50ab4bb1dd99a4a30575f8760300de1b9e0d7bd4f03326dc08e24d77205f",
+    "category": "c7d21c8aa9374da45336a7bf6842fe039bb7775e1e1e29b79863f36c1e7a6997"
+  },
+  "sampling": {
+    "strategy": "Full",
+    "rows_hashed": 5,
+    "total_rows": 5
+  },
+  "archive_size": 1001,
+  "has_full_data": true
+}

@@ -4,6 +4,7 @@ use crate::cli::OutputFormat;
 use crate::error::Result;
 use crate::hash::RowHashComparison;
 use crate::workspace::WorkspaceStats;
+use crate::change_detection::{ChangeDetectionResult, SchemaChanges, RowChanges};
 use serde_json::Value;
 
 /// Pretty printer for tabdiff output
@@ -150,6 +151,127 @@ impl PrettyPrinter {
             println!("  tabdiff snapshot <input> --name <new_version>");
         }
     }
+
+    /// Print comprehensive change detection results
+    pub fn print_comprehensive_status_results(
+        changes: &ChangeDetectionResult,
+        quiet: bool,
+    ) {
+        if quiet {
+            // Machine-readable output
+            println!("schema_changed={}", changes.schema_changes.has_changes());
+            println!("rows_changed={}", changes.row_changes.total_changes());
+            return;
+        }
+
+        println!("📊 tabdiff status");
+        
+        // Print schema changes
+        if changes.schema_changes.has_changes() {
+            println!("├─ ❌ Schema: CHANGED");
+            Self::print_schema_changes(&changes.schema_changes, "│  ");
+        } else {
+            println!("├─ ✅ Schema: unchanged");
+        }
+        
+        // Print row changes
+        if changes.row_changes.has_changes() {
+            println!("├─ ❌ Rows changed: {}", changes.row_changes.total_changes());
+            Self::print_row_changes(&changes.row_changes, "│  ");
+        } else {
+            println!("├─ ✅ Rows: unchanged");
+        }
+        
+        println!("└─ Total rollback operations: {}", changes.rollback_operations.len());
+        
+        if changes.schema_changes.has_changes() || changes.row_changes.has_changes() {
+            println!();
+            println!("🟡 You may want to run:");
+            println!("  tabdiff snapshot <input> --name <new_version>");
+        }
+    }
+
+    /// Print schema changes details
+    fn print_schema_changes(schema_changes: &SchemaChanges, prefix: &str) {
+        if let Some(order_change) = &schema_changes.column_order {
+            println!("{}├─ Column order changed", prefix);
+            println!("{}│  ├─ Before: [{}]", prefix, order_change.before.join(", "));
+            println!("{}│  └─ After:  [{}]", prefix, order_change.after.join(", "));
+        }
+        
+        if !schema_changes.columns_added.is_empty() {
+            println!("{}├─ Columns added: {}", prefix, schema_changes.columns_added.len());
+            for addition in &schema_changes.columns_added {
+                println!("{}│  └─ {} ({})", prefix, addition.name, addition.data_type);
+            }
+        }
+        
+        if !schema_changes.columns_removed.is_empty() {
+            println!("{}├─ Columns removed: {}", prefix, schema_changes.columns_removed.len());
+            for removal in &schema_changes.columns_removed {
+                println!("{}│  └─ {} ({})", prefix, removal.name, removal.data_type);
+            }
+        }
+        
+        if !schema_changes.type_changes.is_empty() {
+            println!("{}└─ Type changes: {}", prefix, schema_changes.type_changes.len());
+            for type_change in &schema_changes.type_changes {
+                println!("{}   └─ {}: {} → {}", prefix, type_change.column, type_change.from, type_change.to);
+            }
+        }
+    }
+
+    /// Print row changes details
+    fn print_row_changes(row_changes: &RowChanges, prefix: &str) {
+        if !row_changes.modified.is_empty() {
+            println!("{}├─ Modified rows: {}", prefix, row_changes.modified.len());
+            for (i, modification) in row_changes.modified.iter().take(3).enumerate() {
+                let is_last = i == std::cmp::min(2, row_changes.modified.len() - 1);
+                let row_prefix = if is_last { "└─" } else { "├─" };
+                println!("{}│  {} Row {}: {} columns changed", prefix, row_prefix, modification.row_index, modification.changes.len());
+                
+                for (j, (col, change)) in modification.changes.iter().take(2).enumerate() {
+                    let is_last_change = j == std::cmp::min(1, modification.changes.len() - 1);
+                    let change_prefix = if is_last { "   " } else { "│  " };
+                    let change_marker = if is_last_change { "└─" } else { "├─" };
+                    println!("{}{}   {} {}: '{}' → '{}'", prefix, change_prefix, change_marker, col, change.before, change.after);
+                }
+                
+                if modification.changes.len() > 2 {
+                    let change_prefix = if is_last { "   " } else { "│  " };
+                    println!("{}{}   └─ ... and {} more", prefix, change_prefix, modification.changes.len() - 2);
+                }
+            }
+            
+            if row_changes.modified.len() > 3 {
+                println!("{}│  └─ ... and {} more modified rows", prefix, row_changes.modified.len() - 3);
+            }
+        }
+        
+        if !row_changes.added.is_empty() {
+            println!("{}├─ Added rows: {}", prefix, row_changes.added.len());
+            let sample_count = std::cmp::min(3, row_changes.added.len());
+            let sample_indices: Vec<String> = row_changes.added
+                .iter()
+                .take(sample_count)
+                .map(|r| r.row_index.to_string())
+                .collect();
+            println!("{}│  └─ Indices: {}{}", prefix, sample_indices.join(", "), 
+                     if row_changes.added.len() > sample_count { "..." } else { "" });
+        }
+        
+        if !row_changes.removed.is_empty() {
+            println!("{}└─ Removed rows: {}", prefix, row_changes.removed.len());
+            let sample_count = std::cmp::min(3, row_changes.removed.len());
+            let sample_indices: Vec<String> = row_changes.removed
+                .iter()
+                .take(sample_count)
+                .map(|r| r.row_index.to_string())
+                .collect();
+            println!("{}   └─ Indices: {}{}", prefix, sample_indices.join(", "), 
+                     if row_changes.removed.len() > sample_count { "..." } else { "" });
+        }
+    }
 }
 
 /// JSON formatter for machine-readable output
@@ -192,6 +314,13 @@ impl JsonFormatter {
             }
         });
         Ok(serde_json::to_string_pretty(&json)?)
+    }
+
+    /// Format comprehensive change detection results as JSON
+    pub fn format_comprehensive_status_results(
+        changes: &ChangeDetectionResult,
+    ) -> Result<String> {
+        Ok(serde_json::to_string_pretty(changes)?)
     }
 }
 

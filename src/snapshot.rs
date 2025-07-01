@@ -65,6 +65,7 @@ impl SnapshotCreator {
         sampling: &SamplingStrategy,
         archive_path: &Path,
         json_path: &Path,
+        full_data: bool,
     ) -> Result<SnapshotMetadata> {
         // Load data
         let data_processor = DataProcessor::new()?;
@@ -112,6 +113,7 @@ impl SnapshotCreator {
             &column_hashes,
             name,
             sampling,
+            full_data,
         )?;
 
         // Create compressed archive
@@ -161,6 +163,7 @@ impl SnapshotCreator {
         column_hashes: &[ColumnHash],
         name: &str,
         sampling: &SamplingStrategy,
+        full_data: bool,
     ) -> Result<Vec<(String, Vec<u8>)>> {
         let mut files = Vec::new();
 
@@ -195,8 +198,14 @@ impl SnapshotCreator {
         ));
 
         // Create rows.json (simplified for now - would use Parquet in full implementation)
+        // We need to extract the actual row data for comprehensive change detection
+        let data_processor = DataProcessor::new()?;
+        data_processor.load_file(&data_info.source)?;
+        let actual_row_data = data_processor.extract_all_data()?;
+        
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
+            "rows": actual_row_data,
             "sampling": format!("{:?}", sampling)
         });
         files.push((

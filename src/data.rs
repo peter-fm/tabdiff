@@ -101,23 +101,17 @@ impl DataProcessor {
 
     /// Get column information from the current view
     fn get_column_info(&self) -> Result<Vec<ColumnInfo>> {
-        let mut stmt = self.connection.prepare("PRAGMA table_info(data_view)")
+        // First, get column names in their original order using DESCRIBE
+        let mut stmt = self.connection.prepare("DESCRIBE data_view")
             .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare column info query: {}", e)
+                format!("Failed to prepare describe query: {}", e)
             ))?;
             
         let rows = stmt.query_map([], |row| {
-            // Try to get the nullable value as different types
-            let nullable = match row.get_ref(3) {
-                Ok(duckdb::types::ValueRef::Int(val)) => val == 0,
-                Ok(duckdb::types::ValueRef::Boolean(val)) => !val, // If it's boolean, true means NOT NULL
-                _ => false, // Default to nullable if we can't determine
-            };
-            
             Ok(ColumnInfo {
-                name: row.get::<_, String>(1)?,
-                data_type: row.get::<_, String>(2)?,
-                nullable,
+                name: row.get::<_, String>(0)?,           // column_name
+                data_type: row.get::<_, String>(1)?,      // column_type
+                nullable: true, // DESCRIBE doesn't provide nullable info, default to true
             })
         }).map_err(|e| crate::error::TabdiffError::data_processing(
             format!("Failed to query column info: {}", e)

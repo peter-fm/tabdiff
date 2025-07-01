@@ -73,7 +73,7 @@ impl HashComputer {
     pub fn hash_schema(&self, columns: &[ColumnInfo]) -> Result<SchemaHash> {
         let mut hasher = Hasher::new();
         
-        // Sort columns by name for deterministic hashing
+        // Create a sorted copy for deterministic hashing, but preserve original order in result
         let mut sorted_columns = columns.to_vec();
         sorted_columns.sort_by(|a, b| a.name.cmp(&b.name));
         
@@ -91,7 +91,7 @@ impl HashComputer {
         Ok(SchemaHash {
             hash,
             column_count: columns.len(),
-            columns: sorted_columns,
+            columns: columns.to_vec(), // Preserve original order
         })
     }
 

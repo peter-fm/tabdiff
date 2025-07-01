@@ -45,6 +45,10 @@ pub enum Commands {
         /// Batch size for processing rows (must be > 0)
         #[arg(long, default_value = "10000", value_parser = validate_batch_size)]
         batch_size: usize,
+        
+        /// Store full data for comprehensive change detection (larger snapshots)
+        #[arg(long)]
+        full_data: bool,
     },
     
     /// Compare two snapshots
