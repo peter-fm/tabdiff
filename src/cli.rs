@@ -42,8 +42,8 @@ pub enum Commands {
         #[arg(long, default_value = "full")]
         sample: String,
         
-        /// Batch size for processing rows
-        #[arg(long, default_value = "10000")]
+        /// Batch size for processing rows (must be > 0)
+        #[arg(long, default_value = "10000", value_parser = validate_batch_size)]
         batch_size: usize,
     },
     
@@ -172,6 +172,18 @@ impl OutputFormat {
             _ => Err(format!("Invalid output format: {}. Use 'pretty' or 'json'", s)),
         }
     }
+}
+
+/// Validate that batch size is greater than 0
+fn validate_batch_size(s: &str) -> Result<usize, String> {
+    let batch_size: usize = s.parse()
+        .map_err(|_| format!("Invalid batch size: '{}'. Must be a positive integer.", s))?;
+    
+    if batch_size == 0 {
+        return Err("Batch size must be greater than 0".to_string());
+    }
+    
+    Ok(batch_size)
 }
 
 #[cfg(test)]

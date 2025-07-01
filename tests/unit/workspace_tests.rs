@@ -157,9 +157,8 @@ fn test_latest_snapshot_empty() {
     let workspace = TabdiffWorkspace::create_new(temp_dir.path().to_path_buf()).unwrap();
     
     let latest = workspace.latest_snapshot().unwrap();
-    // Config file exists but it's not a user snapshot, so latest should be None
-    // The latest_snapshot method should filter out config files
-    assert!(latest.is_none() || latest == Some("config".to_string()));
+    // With no user snapshots, latest should be None (config files should be filtered out)
+    assert!(latest.is_none(), "Latest snapshot should be None when no user snapshots exist");
 }
 
 #[test]

@@ -78,7 +78,7 @@ impl TabdiffWorkspace {
     }
     
     /// Create workspace from root directory path
-    fn from_root(root: PathBuf) -> Result<Self> {
+    pub fn from_root(root: PathBuf) -> Result<Self> {
         let tabdiff_dir = root.join(".tabdiff");
         let diffs_dir = tabdiff_dir.join("diffs");
         
@@ -132,7 +132,12 @@ impl TabdiffWorkspace {
     pub fn latest_snapshot(&self) -> Result<Option<String>> {
         let snapshots = self.list_snapshots()?;
         
-        if snapshots.is_empty() {
+        // Filter out config file - only consider user snapshots
+        let user_snapshots: Vec<String> = snapshots.into_iter()
+            .filter(|name| name != "config")
+            .collect();
+        
+        if user_snapshots.is_empty() {
             return Ok(None);
         }
         
@@ -140,7 +145,7 @@ impl TabdiffWorkspace {
         let mut latest_time = None;
         let mut latest_name = None;
         
-        for name in snapshots {
+        for name in user_snapshots {
             let (_, json_path) = self.snapshot_paths(&name);
             if json_path.exists() {
                 if let Ok(metadata) = fs::metadata(&json_path) {
@@ -165,10 +170,15 @@ impl TabdiffWorkspace {
     
     /// Create initial configuration file
     fn create_config(&self) -> Result<()> {
+        self.create_config_with_force(false)
+    }
+    
+    /// Create configuration file with optional force overwrite
+    pub fn create_config_with_force(&self, force: bool) -> Result<()> {
         let config_path = self.tabdiff_dir.join("config.json");
         
-        if config_path.exists() {
-            return Ok(()); // Don't overwrite existing config
+        if config_path.exists() && !force {
+            return Ok(()); // Don't overwrite existing config unless forced
         }
         
         let config = serde_json::json!({

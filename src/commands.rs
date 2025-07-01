@@ -42,12 +42,28 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
 
 /// Initialize tabdiff workspace
 fn init_command(workspace_path: Option<&Path>, force: bool) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    let root = workspace_path.unwrap_or(&current_dir);
+    
     let workspace = if force {
-        let current_dir = std::env::current_dir()?;
-        let root = workspace_path.unwrap_or(&current_dir);
-        TabdiffWorkspace::create_new(root.to_path_buf())?
+        // Force create new workspace, overwriting existing config
+        let workspace = TabdiffWorkspace::from_root(root.to_path_buf())?;
+        
+        // Create directories
+        std::fs::create_dir_all(&workspace.tabdiff_dir)?;
+        std::fs::create_dir_all(&workspace.diffs_dir)?;
+        
+        // Force create config file
+        workspace.create_config_with_force(true)?;
+        
+        // Update .gitignore
+        workspace.ensure_gitignore()?;
+        
+        workspace
     } else {
-        TabdiffWorkspace::find_or_create(workspace_path)?
+        // For init command, always create in the specified directory
+        // Don't search for existing workspace in parent directories
+        TabdiffWorkspace::create_new(root.to_path_buf())?
     };
 
     println!("✅ Initialized tabdiff workspace at: {}", workspace.root.display());
@@ -80,13 +96,19 @@ fn snapshot_command(
         .map_err(|e| crate::error::TabdiffError::invalid_sampling(e))?;
 
     // Create snapshot
-    let input_path = Path::new(input);
+    let input_path = if Path::new(input).is_absolute() {
+        Path::new(input).to_path_buf()
+    } else {
+        // Resolve relative paths relative to the workspace root
+        workspace.root.join(input)
+    };
+    
     let mut creator = SnapshotCreator::new(batch_size, true);
     
     println!("📸 Creating snapshot '{}' from '{}'...", name, input);
     
     let metadata = creator.create_snapshot(
-        input_path,
+        &input_path,
         name,
         &sampling,
         &archive_path,
@@ -168,8 +190,20 @@ fn diff_command(
     // Save diff result if requested
     if let Some(output_path) = output_path {
         let diff_content = serde_json::to_string_pretty(&diff_result)?;
-        std::fs::write(output_path, diff_content)?;
-        println!("\n💾 Diff saved to: {}", output_path.display());
+        // If output path is relative, resolve it relative to workspace root
+        let final_output_path = if output_path.is_absolute() {
+            output_path.to_path_buf()
+        } else {
+            resolver.workspace().root.join(output_path)
+        };
+        
+        // Create parent directories if needed
+        if let Some(parent) = final_output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        
+        std::fs::write(&final_output_path, diff_content)?;
+        println!("\n💾 Diff saved to: {}", final_output_path.display());
     } else {
         // Save to default location
         let diff_path = resolver.workspace().diff_path(&resolved1.name, &resolved2.name);

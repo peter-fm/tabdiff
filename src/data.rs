@@ -20,20 +20,40 @@ impl DataProcessor {
 
     /// Load data from file and return basic info
     pub fn load_file(&self, file_path: &Path) -> Result<DataInfo> {
+        // Validate file exists and is readable
+        if !file_path.exists() {
+            return Err(crate::error::TabdiffError::invalid_input(
+                format!("File not found: {}", file_path.display())
+            ));
+        }
+
+        if !file_path.is_file() && !file_path.is_dir() {
+            return Err(crate::error::TabdiffError::invalid_input(
+                format!("Path is neither a file nor a directory: {}", file_path.display())
+            ));
+        }
+
         let path_str = file_path.to_string_lossy();
         
-        // Create a view of the file
+        // Create a view of the file with proper error handling
         let create_view_sql = format!(
             "CREATE OR REPLACE VIEW data_view AS SELECT * FROM '{}'",
             path_str
         );
         
-        self.connection.execute(&create_view_sql, [])?;
+        self.connection.execute(&create_view_sql, [])
+            .map_err(|e| self.convert_duckdb_error(e, file_path))?;
         
-        // Get row count
+        // Get row count with error handling
         let row_count: u64 = self.connection
-            .prepare("SELECT COUNT(*) FROM data_view")?
-            .query_row([], |row| row.get(0))?;
+            .prepare("SELECT COUNT(*) FROM data_view")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare row count query: {}", e)
+            ))?
+            .query_row([], |row| row.get(0))
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to get row count: {}", e)
+            ))?;
         
         // Get column information
         let columns = self.get_column_info()?;
@@ -45,14 +65,52 @@ impl DataProcessor {
         })
     }
 
+    /// Convert DuckDB errors to appropriate TabdiffError types
+    fn convert_duckdb_error(&self, error: duckdb::Error, file_path: &Path) -> crate::error::TabdiffError {
+        let error_msg = error.to_string();
+        
+        // Detect common file format issues
+        if error_msg.contains("CSV Error") || 
+           error_msg.contains("Could not convert") ||
+           error_msg.contains("Invalid CSV") ||
+           error_msg.contains("Unterminated quoted field") {
+            crate::error::TabdiffError::invalid_input(
+                format!("Malformed CSV file '{}': {}", file_path.display(), error_msg)
+            )
+        } else if error_msg.contains("JSON") || error_msg.contains("Malformed JSON") {
+            crate::error::TabdiffError::invalid_input(
+                format!("Malformed JSON file '{}': {}", file_path.display(), error_msg)
+            )
+        } else if error_msg.contains("No files found") || error_msg.contains("does not exist") {
+            crate::error::TabdiffError::invalid_input(
+                format!("File not found: {}", file_path.display())
+            )
+        } else if error_msg.contains("Permission denied") {
+            crate::error::TabdiffError::invalid_input(
+                format!("Permission denied accessing file: {}", file_path.display())
+            )
+        } else if error_msg.contains("UTF-8") || error_msg.contains("encoding") {
+            crate::error::TabdiffError::invalid_input(
+                format!("File encoding error '{}': {}", file_path.display(), error_msg)
+            )
+        } else {
+            // For other DuckDB errors, pass through the original error message
+            crate::error::TabdiffError::DuckDb(error)
+        }
+    }
+
     /// Get column information from the current view
     fn get_column_info(&self) -> Result<Vec<ColumnInfo>> {
-        let mut stmt = self.connection.prepare("PRAGMA table_info(data_view)")?;
+        let mut stmt = self.connection.prepare("PRAGMA table_info(data_view)")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare column info query: {}", e)
+            ))?;
+            
         let rows = stmt.query_map([], |row| {
             // Try to get the nullable value as different types
-            let nullable = match row.get_ref(3)? {
-                duckdb::types::ValueRef::Int(val) => val == 0,
-                duckdb::types::ValueRef::Boolean(val) => !val, // If it's boolean, true means NOT NULL
+            let nullable = match row.get_ref(3) {
+                Ok(duckdb::types::ValueRef::Int(val)) => val == 0,
+                Ok(duckdb::types::ValueRef::Boolean(val)) => !val, // If it's boolean, true means NOT NULL
                 _ => false, // Default to nullable if we can't determine
             };
             
@@ -61,11 +119,15 @@ impl DataProcessor {
                 data_type: row.get::<_, String>(2)?,
                 nullable,
             })
-        })?;
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to query column info: {}", e)
+        ))?;
         
         let mut columns = Vec::new();
         for row in rows {
-            columns.push(row?);
+            columns.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process column info row: {}", e)
+            ))?);
         }
         
         Ok(columns)
@@ -73,8 +135,18 @@ impl DataProcessor {
 
     /// Extract all data as rows of strings
     pub fn extract_all_data(&self) -> Result<Vec<Vec<String>>> {
-        let mut stmt = self.connection.prepare("SELECT * FROM data_view")?;
-        let column_count = stmt.column_count();
+        // First, get column information to determine the number of columns safely
+        let columns = self.get_column_info()?;
+        let column_count = columns.len();
+        
+        if column_count == 0 {
+            return Ok(Vec::new()); // No columns, return empty data
+        }
+        
+        let mut stmt = self.connection.prepare("SELECT * FROM data_view")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare data extraction query: {}", e)
+            ))?;
         
         let rows = stmt.query_map([], |row| {
             let mut string_row = Vec::new();
@@ -104,11 +176,15 @@ impl DataProcessor {
                 string_row.push(value);
             }
             Ok(string_row)
-        })?;
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to extract data rows: {}", e)
+        ))?;
         
         let mut data = Vec::new();
         for row in rows {
-            data.push(row?);
+            data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process data row: {}", e)
+            ))?);
         }
         
         Ok(data)
@@ -121,7 +197,10 @@ impl DataProcessor {
         
         for column in &columns {
             let sql = format!("SELECT \"{}\" FROM data_view", column.name);
-            let mut stmt = self.connection.prepare(&sql)?;
+            let mut stmt = self.connection.prepare(&sql)
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to prepare column query for '{}': {}", column.name, e)
+                ))?;
             
             let rows = stmt.query_map([], |row| {
                 let value: String = match row.get_ref(0)? {
@@ -147,11 +226,15 @@ impl DataProcessor {
                     _ => "<unknown>".to_string(),
                 };
                 Ok(value)
-            })?;
+            }).map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to extract column data for '{}': {}", column.name, e)
+            ))?;
             
             let mut values = Vec::new();
             for row in rows {
-                values.push(row?);
+                values.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to process column data row for '{}': {}", column.name, e)
+                ))?);
             }
             
             column_data.insert(column.name.clone(), values);

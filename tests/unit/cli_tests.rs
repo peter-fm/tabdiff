@@ -362,6 +362,85 @@ fn test_sampling_strategy_boundary_values() {
 }
 
 #[test]
+fn test_sampling_strategy_invalid_values() {
+    // Test invalid percentage values
+    assert!(SamplingStrategy::parse("101%").is_err());
+    assert!(SamplingStrategy::parse("-5%").is_err());
+    assert!(SamplingStrategy::parse("abc%").is_err());
+    assert!(SamplingStrategy::parse("%").is_err());
+    assert!(SamplingStrategy::parse("50%%").is_err());
+    
+    // Test invalid count values
+    assert!(SamplingStrategy::parse("-100").is_err());
+    assert!(SamplingStrategy::parse("abc").is_err());
+    assert!(SamplingStrategy::parse("123abc").is_err());
+    
+    // Test edge cases
+    assert!(SamplingStrategy::parse("").is_err());
+    assert!(SamplingStrategy::parse(" ").is_err());
+    assert!(SamplingStrategy::parse("full%").is_err());
+}
+
+#[test]
+fn test_invalid_snapshot_names() {
+    // Test snapshot names with problematic characters
+    let problematic_names = vec![
+        "", // Empty name
+        " ", // Just whitespace
+        "name with / slash",
+        "name with \\ backslash", 
+        "name\nwith\nnewlines",
+        "name\twith\ttabs",
+        "name with \0 null",
+    ];
+    
+    for name in problematic_names {
+        let result = Cli::try_parse_from(&[
+            "tabdiff", "snapshot", "data.csv", "--name", name
+        ]);
+        // These should either parse successfully (and be handled by business logic)
+        // or fail at the CLI level - both are acceptable
+        match result {
+            Ok(_) => {}, // CLI parsing succeeded, validation happens later
+            Err(_) => {}, // CLI parsing failed, which is also acceptable
+        }
+    }
+}
+
+#[test]
+fn test_invalid_batch_sizes() {
+    // Test invalid batch size values
+    assert!(Cli::try_parse_from(&[
+        "tabdiff", "snapshot", "data.csv", "--name", "test", "--batch-size", "0"
+    ]).is_err());
+    
+    assert!(Cli::try_parse_from(&[
+        "tabdiff", "snapshot", "data.csv", "--name", "test", "--batch-size", "-100"
+    ]).is_err());
+    
+    assert!(Cli::try_parse_from(&[
+        "tabdiff", "snapshot", "data.csv", "--name", "test", "--batch-size", "abc"
+    ]).is_err());
+}
+
+#[test]
+fn test_conflicting_status_flags() {
+    // Test conflicting flags in status command
+    let cli = Cli::try_parse_from(&[
+        "tabdiff", "status", "data.csv", "--quiet", "--json"
+    ]).unwrap();
+    
+    // Both flags should be parsed successfully - conflict resolution happens at runtime
+    match cli.command {
+        Commands::Status { quiet, json, .. } => {
+            assert!(quiet);
+            assert!(json);
+        }
+        _ => panic!("Expected Status command"),
+    }
+}
+
+#[test]
 fn test_path_handling() {
     // Test various path formats
     let cli = Cli::try_parse_from(&[

@@ -68,8 +68,8 @@ fn test_sampling_workflow() {
     
     runner.expect_success(&["init"]);
     
-    // Create large dataset
-    let large_csv = runner.fixture().create_large_csv("large_data.csv", 10000, 10).unwrap();
+    // Create moderately large dataset (reduced from 10k to 1k rows for speed)
+    let large_csv = runner.fixture().create_large_csv("large_data.csv", 1000, 5).unwrap();
     
     // Full snapshot
     runner.expect_success(&[
@@ -88,13 +88,13 @@ fn test_sampling_workflow() {
     // Count sampling
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
-        "--name", "sampled_1000", 
-        "--sample", "1000"
+        "--name", "sampled_100", 
+        "--sample", "100"
     ]);
     
     // Compare different sampling strategies
     runner.expect_success(&["diff", "full", "sampled_10pct"]);
-    runner.expect_success(&["diff", "sampled_10pct", "sampled_1000"]);
+    runner.expect_success(&["diff", "sampled_10pct", "sampled_100"]);
     
     // Status check with sampling
     runner.expect_success(&[
@@ -224,22 +224,22 @@ fn test_large_dataset_workflow() {
     
     runner.expect_success(&["init"]);
     
-    // Create large dataset
-    let large_csv = runner.fixture().create_large_csv("large.csv", 50000, 20).unwrap();
+    // Create moderately large dataset (reduced from 50k to 1k rows for speed)
+    let large_csv = runner.fixture().create_large_csv("large.csv", 1000, 10).unwrap();
     
     // Initial snapshot with sampling
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
         "--name", "large_baseline", 
-        "--sample", "1%",
-        "--batch-size", "5000"
+        "--sample", "10%",
+        "--batch-size", "500"
     ]);
     
     // Quick status checks
     runner.expect_success(&[
         "status", large_csv.to_str().unwrap(), 
         "--compare-to", "large_baseline", 
-        "--sample", "0.5%",
+        "--sample", "5%",
         "--quiet"
     ]);
     

@@ -69,7 +69,8 @@ impl SnapshotCreator {
         // Load data
         let data_processor = DataProcessor::new()?;
         
-        if !DataProcessor::is_supported_format(input_path) {
+        // Only check format for files, not directories (which can contain supported files)
+        if input_path.is_file() && !DataProcessor::is_supported_format(input_path) {
             return Err(TabdiffError::invalid_input(format!(
                 "Unsupported file format: {}",
                 input_path.display()

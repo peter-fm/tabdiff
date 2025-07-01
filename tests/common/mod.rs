@@ -62,6 +62,13 @@ impl TestFixture {
         Ok(path)
     }
 
+    /// Create a test CSV file with raw string content
+    pub fn create_csv_raw(&self, name: &str, content: &str) -> Result<PathBuf> {
+        let path = self.root().join(name);
+        fs::write(&path, content)?;
+        Ok(path)
+    }
+
     /// Create a test JSON file with sample data
     pub fn create_json(&self, name: &str, data: &serde_json::Value) -> Result<PathBuf> {
         let path = self.root().join(name);
@@ -171,8 +178,10 @@ impl CliTestRunner {
         let cli = Cli::try_parse_from(cmd_args)
             .map_err(|e| tabdiff::TabdiffError::invalid_input(e.to_string()))?;
 
-        // Execute command with our test workspace
-        execute_command(cli.command, Some(self.fixture.root()))
+        // Execute command with the workspace path from CLI (if any)
+        // If no --workspace flag was provided, use the fixture root as default
+        let workspace_path = cli.workspace.as_deref().or(Some(self.fixture.root()));
+        execute_command(cli.command, workspace_path)
     }
 
     /// Run a command and expect it to succeed

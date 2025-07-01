@@ -189,8 +189,16 @@ fn test_snapshot_command_empty_file() {
     let empty_path = runner.fixture().root().join("empty.csv");
     std::fs::write(&empty_path, "").unwrap();
     
-    let error = runner.expect_failure(&["snapshot", empty_path.to_str().unwrap(), "--name", "empty"]);
-    assert!(error.to_string().contains("empty") || error.to_string().contains("no data"));
+    // Empty files should be handled gracefully, creating a snapshot with 0 rows
+    runner.expect_success(&["snapshot", empty_path.to_str().unwrap(), "--name", "empty"]);
+    
+    runner.fixture().assert_snapshot_exists("empty");
+    
+    // Verify the snapshot metadata shows 0 rows
+    let (_, json_path) = runner.fixture().workspace.snapshot_paths("empty");
+    let content = std::fs::read_to_string(&json_path).unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(metadata["row_count"], 0);
 }
 
 #[test]

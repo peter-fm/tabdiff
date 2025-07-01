@@ -1,0 +1,13 @@
+{
+  "base": "production",
+  "columns_changed": [
+    "name",
+    "price",
+    "id"
+  ],
+  "compare": "dev_build_123",
+  "row_count": 3,
+  "rows_changed": 0,
+  "sample_changes": [],
+  "schema_changed": false
+}
