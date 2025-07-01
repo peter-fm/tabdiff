@@ -1,0 +1,4 @@
+/target
+
+# Ignore compressed snapshot archives
+.tabdiff/*.tabdiff
