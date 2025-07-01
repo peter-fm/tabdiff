@@ -1,7 +1,9 @@
 //! Command implementations for tabdiff CLI
 
 use crate::cli::{Commands, DiffMode, OutputFormat, SamplingStrategy};
+use crate::data::DataProcessor;
 use crate::error::Result;
+use crate::hash::HashComputer;
 use crate::output::{OutputManager, PrettyPrinter};
 use crate::resolver::{SnapshotRef, SnapshotResolver};
 use crate::snapshot::{SnapshotCreator, SnapshotLoader};
@@ -134,7 +136,7 @@ fn diff_command(
     output_path: Option<&Path>,
 ) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
-    let resolver = SnapshotResolver::new(workspace);
+    let resolver = SnapshotResolver::new(workspace.clone());
 
     // Parse diff mode
     let _diff_mode = DiffMode::parse(mode)
@@ -224,7 +226,7 @@ fn show_command(
     format: &str,
 ) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
-    let resolver = SnapshotResolver::new(workspace);
+    let resolver = SnapshotResolver::new(workspace.clone());
 
     let output_format = OutputFormat::parse(format)
         .map_err(|e| crate::error::TabdiffError::invalid_input(e))?;
@@ -272,10 +274,10 @@ fn status_command(
     json: bool,
 ) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
-    let resolver = SnapshotResolver::new(workspace);
+    let resolver = SnapshotResolver::new(workspace.clone());
 
     // Parse sampling strategy
-    let _sampling = SamplingStrategy::parse(sample)
+    let sampling = SamplingStrategy::parse(sample)
         .map_err(|e| crate::error::TabdiffError::invalid_sampling(e))?;
 
     // Resolve comparison snapshot
@@ -290,17 +292,105 @@ fn status_command(
 
     println!("📊 Checking status of '{}' against snapshot '{}'...", input, comparison_snapshot.name);
 
-    // For now, just show a simple status
-    // In a full implementation, this would load the current data and compare
-    let schema_changed = false;
-    let columns_changed: Vec<String> = Vec::new();
-    let row_comparison = crate::hash::RowHashComparison {
-        changed_rows: Vec::new(),
-        added_rows: Vec::new(),
-        removed_rows: Vec::new(),
-        total_base: 0,
-        total_compare: 0,
+    // Load baseline snapshot metadata and data
+    let baseline_metadata = SnapshotLoader::load_metadata(&comparison_snapshot.json_path)?;
+    let baseline_data = if comparison_snapshot.has_archive() {
+        SnapshotLoader::load_full_snapshot(comparison_snapshot.require_archive()?)?
+    } else {
+        return Err(crate::error::TabdiffError::archive("Baseline snapshot has no archive data"));
     };
+
+    // Load current data
+    let input_path = if Path::new(input).is_absolute() {
+        Path::new(input).to_path_buf()
+    } else {
+        // Resolve relative paths relative to the workspace root
+        workspace.root.join(input)
+    };
+
+    let data_processor = DataProcessor::new()?;
+    let current_data_info = data_processor.load_file(&input_path)?;
+    let current_row_data = data_processor.extract_all_data()?;
+
+    // Initialize hash computer
+    let hash_computer = HashComputer::new(1000);
+
+    // Compare schemas
+    let current_schema_hash = hash_computer.hash_schema(&current_data_info.columns)?;
+    let schema_changed = current_schema_hash.hash != baseline_metadata.schema_hash;
+
+    // Compare column schemas (not data content)
+    let mut columns_changed = Vec::new();
+    
+    // Get baseline schema from metadata
+    let baseline_schema_data = if let Some(schema_data) = baseline_data.schema_data.get("columns") {
+        schema_data.as_array().unwrap_or(&Vec::new()).clone()
+    } else {
+        Vec::new()
+    };
+    
+    // Create maps for easy comparison
+    let mut baseline_columns = std::collections::HashMap::new();
+    for col_value in &baseline_schema_data {
+        if let (Some(name), Some(data_type), Some(nullable)) = (
+            col_value.get("name").and_then(|v| v.as_str()),
+            col_value.get("data_type").and_then(|v| v.as_str()),
+            col_value.get("nullable").and_then(|v| v.as_bool())
+        ) {
+            baseline_columns.insert(name.to_string(), (data_type.to_string(), nullable));
+        }
+    }
+    
+    let mut current_columns = std::collections::HashMap::new();
+    for col in &current_data_info.columns {
+        current_columns.insert(col.name.clone(), (col.data_type.clone(), col.nullable));
+    }
+    
+    // Check for changed or removed columns
+    for (col_name, (baseline_type, baseline_nullable)) in &baseline_columns {
+        if let Some((current_type, current_nullable)) = current_columns.get(col_name) {
+            if baseline_type != current_type || baseline_nullable != current_nullable {
+                columns_changed.push(col_name.clone());
+            }
+        } else {
+            columns_changed.push(format!("{} (removed)", col_name));
+        }
+    }
+    
+    // Check for added columns
+    for col_name in current_columns.keys() {
+        if !baseline_columns.contains_key(col_name) {
+            columns_changed.push(format!("{} (added)", col_name));
+        }
+    }
+
+    // Compare rows
+    let current_row_hashes = hash_computer.hash_rows(&current_row_data, &sampling)?;
+    
+    // Extract baseline row hashes from archive data
+    let baseline_row_hashes = if let Some(rows_data) = baseline_data.row_data.get("row_hashes") {
+        if let Some(row_hashes_array) = rows_data.as_array() {
+            let mut baseline_hashes = Vec::new();
+            for row_hash_value in row_hashes_array {
+                if let (Some(row_index), Some(hash)) = (
+                    row_hash_value.get("row_index").and_then(|v| v.as_u64()),
+                    row_hash_value.get("hash").and_then(|v| v.as_str())
+                ) {
+                    baseline_hashes.push(crate::hash::RowHash {
+                        row_index,
+                        hash: hash.to_string(),
+                    });
+                }
+            }
+            baseline_hashes
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let row_comparison = hash_computer.compare_row_hashes(&baseline_row_hashes, &current_row_hashes);
 
     if json {
         let status_json = crate::output::JsonFormatter::format_status_results(

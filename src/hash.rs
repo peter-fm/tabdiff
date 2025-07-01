@@ -5,7 +5,7 @@ use crate::error::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A hash value represented as a hex string
 pub type HashValue = String;
@@ -214,44 +214,96 @@ impl HashComputer {
         "TEXT".to_string() // Default
     }
 
-    /// Compare two sets of row hashes
+    /// Compare two sets of row hashes using content-based comparison
     pub fn compare_row_hashes(
         &self,
         base_hashes: &[RowHash],
         compare_hashes: &[RowHash],
     ) -> RowHashComparison {
-        let base_map: HashMap<u64, &str> = base_hashes
+        // Create sets of content hashes for efficient lookup
+        let base_content_set: HashSet<&str> = base_hashes
             .iter()
-            .map(|rh| (rh.row_index, rh.hash.as_str()))
+            .map(|rh| rh.hash.as_str())
             .collect();
         
-        let compare_map: HashMap<u64, &str> = compare_hashes
+        let compare_content_set: HashSet<&str> = compare_hashes
             .iter()
-            .map(|rh| (rh.row_index, rh.hash.as_str()))
+            .map(|rh| rh.hash.as_str())
             .collect();
+        
+        // Create maps from content hash to row indices for tracking which rows changed
+        let mut base_content_to_indices: HashMap<&str, Vec<u64>> = HashMap::new();
+        for rh in base_hashes {
+            base_content_to_indices
+                .entry(rh.hash.as_str())
+                .or_insert_with(Vec::new)
+                .push(rh.row_index);
+        }
+        
+        let mut compare_content_to_indices: HashMap<&str, Vec<u64>> = HashMap::new();
+        for rh in compare_hashes {
+            compare_content_to_indices
+                .entry(rh.hash.as_str())
+                .or_insert_with(Vec::new)
+                .push(rh.row_index);
+        }
         
         let mut changed_rows = Vec::new();
         let mut added_rows = Vec::new();
         let mut removed_rows = Vec::new();
         
-        // Find changed and removed rows
-        for (idx, hash) in &base_map {
-            match compare_map.get(idx) {
-                Some(compare_hash) => {
-                    if hash != compare_hash {
-                        changed_rows.push(*idx);
-                    }
+        // Find removed content (exists in base but not in compare)
+        for content_hash in &base_content_set {
+            if !compare_content_set.contains(content_hash) {
+                // This content was removed - add all row indices that had this content
+                if let Some(indices) = base_content_to_indices.get(content_hash) {
+                    removed_rows.extend(indices);
                 }
-                None => removed_rows.push(*idx),
             }
         }
         
-        // Find added rows
-        for idx in compare_map.keys() {
-            if !base_map.contains_key(idx) {
-                added_rows.push(*idx);
+        // Find added content (exists in compare but not in base)
+        for content_hash in &compare_content_set {
+            if !base_content_set.contains(content_hash) {
+                // This content was added - add all row indices that have this content
+                if let Some(indices) = compare_content_to_indices.get(content_hash) {
+                    added_rows.extend(indices);
+                }
             }
         }
+        
+        // For content that exists in both, check if the count changed (indicating duplicates added/removed)
+        for content_hash in base_content_set.intersection(&compare_content_set) {
+            let base_count = base_content_to_indices.get(content_hash).map(|v| v.len()).unwrap_or(0);
+            let compare_count = compare_content_to_indices.get(content_hash).map(|v| v.len()).unwrap_or(0);
+            
+            if base_count != compare_count {
+                // Same content but different number of occurrences
+                // This could indicate duplicate rows were added or removed
+                if compare_count > base_count {
+                    // More instances in compare - some were added
+                    if let Some(indices) = compare_content_to_indices.get(content_hash) {
+                        // Add the "extra" indices as added rows
+                        for &idx in indices.iter().skip(base_count) {
+                            added_rows.push(idx);
+                        }
+                    }
+                } else {
+                    // Fewer instances in compare - some were removed
+                    if let Some(indices) = base_content_to_indices.get(content_hash) {
+                        // Add the "missing" indices as removed rows
+                        for &idx in indices.iter().skip(compare_count) {
+                            removed_rows.push(idx);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Sort the results for consistent output
+        changed_rows.sort_unstable();
+        added_rows.sort_unstable();
+        removed_rows.sort_unstable();
         
         RowHashComparison {
             changed_rows,
@@ -334,5 +386,43 @@ mod tests {
         // Test percentage sampling
         let pct_hashes = computer.hash_rows(&row_data, &SamplingStrategy::Percentage(0.5)).unwrap();
         assert_eq!(pct_hashes.len(), 2);
+    }
+
+    #[test]
+    fn test_content_based_row_comparison() {
+        let computer = HashComputer::new(1000);
+        
+        // Create baseline data: rows A, B, C, D, E
+        let baseline_data = vec![
+            vec!["A".to_string(), "1".to_string()],  // Row 0
+            vec!["B".to_string(), "2".to_string()],  // Row 1
+            vec!["C".to_string(), "3".to_string()],  // Row 2
+            vec!["D".to_string(), "4".to_string()],  // Row 3
+            vec!["E".to_string(), "5".to_string()],  // Row 4
+        ];
+        
+        // Create current data: rows A, C, D, E (removed B from middle)
+        let current_data = vec![
+            vec!["A".to_string(), "1".to_string()],  // Row 0 (same content as baseline row 0)
+            vec!["C".to_string(), "3".to_string()],  // Row 1 (same content as baseline row 2)
+            vec!["D".to_string(), "4".to_string()],  // Row 2 (same content as baseline row 3)
+            vec!["E".to_string(), "5".to_string()],  // Row 3 (same content as baseline row 4)
+        ];
+        
+        let baseline_hashes = computer.hash_rows(&baseline_data, &SamplingStrategy::Full).unwrap();
+        let current_hashes = computer.hash_rows(&current_data, &SamplingStrategy::Full).unwrap();
+        
+        let comparison = computer.compare_row_hashes(&baseline_hashes, &current_hashes);
+        
+        // Should detect that row with content "B,2" was removed
+        assert_eq!(comparison.removed_rows.len(), 1);
+        assert_eq!(comparison.added_rows.len(), 0);
+        assert_eq!(comparison.changed_rows.len(), 0);
+        assert_eq!(comparison.total_base, 5);
+        assert_eq!(comparison.total_compare, 4);
+        assert_eq!(comparison.total_changes(), 1);
+        
+        // The removed row should be the one that contained "B,2" (originally at index 1)
+        assert!(comparison.removed_rows.contains(&1));
     }
 }

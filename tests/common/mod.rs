@@ -226,6 +226,105 @@ pub mod sample_data {
         ]
     }
 
+    // Table change test data generators
+    pub fn rows_added_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["1", "Apple", "1.50"],
+            vec!["2", "Banana", "0.75"],
+            vec!["3", "Cherry", "2.00"],
+            vec!["4", "Date", "3.00"],    // New row
+            vec!["5", "Elderberry", "4.50"], // Another new row
+        ]
+    }
+
+    pub fn rows_deleted_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["2", "Banana", "0.75"], // Only middle row remains (Cherry and Apple deleted)
+        ]
+    }
+
+    pub fn values_changed_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["1", "Green Apple", "1.75"], // Name and price changed
+            vec!["2", "Banana", "0.75"],      // Unchanged
+            vec!["3", "Cherry", "2.50"],      // Price changed
+        ]
+    }
+
+    pub fn columns_reordered_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["price", "id", "name"], // Columns reordered
+            vec!["1.50", "1", "Apple"],
+            vec!["0.75", "2", "Banana"],
+            vec!["2.00", "3", "Cherry"],
+        ]
+    }
+
+    pub fn columns_renamed_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["product_id", "product_name", "unit_price"], // All columns renamed
+            vec!["1", "Apple", "1.50"],
+            vec!["2", "Banana", "0.75"],
+            vec!["3", "Cherry", "2.00"],
+        ]
+    }
+
+    pub fn column_types_changed_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["001", "Apple", "$1.50"],    // id now has leading zeros, price has currency symbol
+            vec!["002", "Banana", "$0.75"],
+            vec!["003", "Cherry", "$2.00"],
+        ]
+    }
+
+    pub fn multiple_rows_added_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["0", "Avocado", "2.50"],     // New row at beginning
+            vec!["1", "Apple", "1.50"],
+            vec!["1.5", "Apricot", "3.00"],   // New row in middle
+            vec!["2", "Banana", "0.75"],
+            vec!["3", "Cherry", "2.00"],
+            vec!["4", "Date", "3.50"],        // New row at end
+        ]
+    }
+
+    pub fn multiple_rows_deleted_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"],
+            vec!["2", "Banana", "0.75"], // Only one row remains
+        ]
+    }
+
+    pub fn empty_table_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price"], // Headers only, no data rows
+        ]
+    }
+
+    pub fn mixed_changes_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["id", "name", "price", "category"], // New column added
+            vec!["1", "Green Apple", "1.75", "Fruit"], // Value changed + new column
+            vec!["2", "Banana", "0.75", "Fruit"],      // New column only
+            vec!["4", "Date", "3.00", "Fruit"],        // New row (id=3 Cherry deleted)
+            vec!["5", "Elderberry", "4.50", "Berry"],  // Another new row
+        ]
+    }
+
+    pub fn column_order_and_rename_csv_data() -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["unit_price", "product_id", "product_name"], // Reordered AND renamed
+            vec!["1.50", "1", "Apple"],
+            vec!["0.75", "2", "Banana"],
+            vec!["2.00", "3", "Cherry"],
+        ]
+    }
+
     pub fn simple_json_data() -> serde_json::Value {
         json!([
             {"id": 1, "name": "Apple", "price": 1.50},

@@ -25,7 +25,8 @@ tests/
 │   ├── filesystem_tests.rs # File system edge cases
 │   └── data_edge_cases.rs  # Data format edge cases
 ├── functional/           # Real-world workflow testing
-│   └── workflow_tests.rs # Complete user workflows
+│   ├── workflow_tests.rs # Complete user workflows
+│   └── table_changes_tests.rs # Basic table change scenarios
 └── fixtures/             # Test data files
     ├── csv/
     ├── parquet/
@@ -88,6 +89,7 @@ Test potential failure scenarios and boundary conditions:
 
 Test real-world usage scenarios and complete workflows:
 
+#### Current Implementation
 - **Basic Workflow**: Init → Snapshot → Diff → Status cycle
 - **Schema Evolution**: Detecting and handling schema changes
 - **Sampling Strategies**: Different sampling approaches and comparisons
@@ -97,6 +99,18 @@ Test real-world usage scenarios and complete workflows:
 - **Data Quality Monitoring**: Daily snapshot comparisons
 - **Large Dataset Handling**: Performance with big files
 - **Error Recovery**: Graceful failure and recovery scenarios
+- **Table Changes**: Basic table change scenarios (20 tests covering row operations, cell changes, column operations, mixed changes)
+
+#### Future Roadmap
+See `tests/TEST_ROADMAP.md` for a comprehensive plan to implement 110 additional tests covering:
+- Column structure evolution (15 tests)
+- Data quality and integrity (12 tests)
+- Scale and performance testing (10 tests)
+- Schema evolution patterns (12 tests)
+- Cross-format compatibility (8 tests)
+- Business logic changes (10 tests)
+- Edge cases and boundary conditions (15 tests)
+- Real-world migration scenarios (8 tests)
 
 **Run with**: `cargo test functional::`
 

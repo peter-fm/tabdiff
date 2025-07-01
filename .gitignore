@@ -2,3 +2,5 @@
 
 # Ignore compressed snapshot archives
 .tabdiff/*.tabdiff
+.DS_Store
+/demo
