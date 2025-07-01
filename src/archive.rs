@@ -1,9 +1,9 @@
 //! Archive management for tabdiff snapshots
 
-use crate::error::{Result, TabdiffError};
+use crate::error::Result;
 use crate::progress::create_file_progress;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 use tar::{Archive, Builder};
 use zstd::{Decoder, Encoder};

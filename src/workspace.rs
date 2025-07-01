@@ -1,6 +1,6 @@
 //! Workspace management for tabdiff operations
 
-use crate::error::{Result, TabdiffError};
+use crate::error::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -277,7 +277,7 @@ impl TabdiffWorkspace {
         
         // Remove oldest snapshots beyond keep_latest
         for (name, _) in snapshots_with_time.iter().take(snapshots_with_time.len().saturating_sub(keep_latest)) {
-            let (archive_path, json_path) = self.snapshot_paths(name);
+            let (archive_path, _json_path) = self.snapshot_paths(name);
             
             if archive_path.exists() {
                 if let Ok(metadata) = fs::metadata(&archive_path) {

@@ -2,10 +2,9 @@
 
 use crate::cli::OutputFormat;
 use crate::error::Result;
-use crate::hash::{ColumnHash, RowHashComparison, SchemaHash};
+use crate::hash::RowHashComparison;
 use crate::workspace::WorkspaceStats;
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// Pretty printer for tabdiff output
 pub struct PrettyPrinter;

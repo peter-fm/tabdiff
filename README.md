@@ -14,9 +14,15 @@
 
 ## 📦 Installation
 
-### Quick Start (Recommended)
+### Quick Start
 
-tabdiff comes with **bundled DuckDB** by default, so no external dependencies are required:
+#### Option 1: System DuckDB (Default)
+
+**Prerequisites:**
+- **macOS**: `brew install duckdb`
+- **Ubuntu/Debian**: `sudo apt install libduckdb-dev`
+- **RHEL/CentOS**: `sudo yum install duckdb-devel`
+- **Windows**: Download from [duckdb.org](https://duckdb.org/docs/installation/)
 
 ```bash
 git clone <repository-url>
@@ -25,11 +31,7 @@ cargo build --release
 ./target/release/tabdiff --help
 ```
 
-That's it! The bundled version works out-of-the-box on all platforms.
-
-### Advanced Installation Options
-
-#### Option 1: Bundled DuckDB (Default)
+#### Option 2: Bundled DuckDB (Zero Dependencies)
 ```bash
 cargo build --release --features bundled
 ```
@@ -38,21 +40,10 @@ cargo build --release --features bundled
 - ✅ No external dependencies
 - ⚠️ Larger binary size (~50MB)
 
-#### Option 2: System DuckDB
-```bash
-cargo build --release --no-default-features
-```
-
-**Prerequisites for system DuckDB:**
-- **macOS**: `brew install duckdb`
-- **Ubuntu/Debian**: `sudo apt install libduckdb-dev`
-- **RHEL/CentOS**: `sudo yum install duckdb-devel`
-- **Windows**: Download from [duckdb.org](https://duckdb.org/docs/installation/)
-
 #### Option 3: Custom DuckDB Path
 ```bash
 export DUCKDB_LIB_PATH=/custom/path/to/duckdb/lib
-cargo build --release --no-default-features
+cargo build --release
 ```
 
 ### Installation Verification

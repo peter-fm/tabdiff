@@ -1,7 +1,7 @@
 //! Hashing utilities for tabdiff operations
 
 use crate::cli::SamplingStrategy;
-use crate::error::{Result, TabdiffError};
+use crate::error::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ pub struct ColumnInfo {
 
 /// Hash computer for various data structures
 pub struct HashComputer {
+    #[allow(dead_code)] // Used for potential future batching optimizations
     batch_size: usize,
 }
 

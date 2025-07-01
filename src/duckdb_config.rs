@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_config_creation() {
-        let config = DuckDbConfig::new();
+        let _config = DuckDbConfig::new();
         // Should not panic
         assert!(true);
     }

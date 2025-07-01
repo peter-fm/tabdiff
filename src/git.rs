@@ -1,6 +1,5 @@
 //! Git integration utilities
 
-use crate::error::{Result, TabdiffError};
 use std::path::Path;
 
 /// Git integration helper

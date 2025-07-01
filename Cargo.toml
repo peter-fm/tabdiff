@@ -1,6 +1,6 @@
 [package]
 name = "tabdiff"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A snapshot-based structured data diff tool"
 license = "MIT"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 clap = { version = "4.4", features = ["derive"] }
 
 # Data processing
-duckdb = { version = "1.0", features = ["bundled"] }
+duckdb = "1.0"
 parquet = "53.0"
 
 # Serialization
@@ -56,5 +56,5 @@ walkdir = "2.4"
 tempfile = "3.8"
 
 [features]
-default = ["bundled"]
+default = []
 bundled = ["duckdb/bundled"]

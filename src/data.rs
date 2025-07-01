@@ -1,8 +1,8 @@
 //! Data processing utilities using DuckDB
 
-use crate::error::{Result, TabdiffError};
-use crate::hash::{ColumnInfo, HashComputer};
-use duckdb::{Connection, Result as DuckResult};
+use crate::error::Result;
+use crate::hash::ColumnInfo;
+use duckdb::Connection;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_data_processor_creation() {
-        let processor = DataProcessor::new().unwrap();
+        let _processor = DataProcessor::new().unwrap();
         // Just test that we can create a processor
         assert!(true);
     }
