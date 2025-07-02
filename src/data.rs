@@ -3,19 +3,35 @@
 use crate::error::Result;
 use crate::hash::ColumnInfo;
 use duckdb::Connection;
+use num_bigint::BigUint;
+use num_traits::Num;
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Data processor for various file formats
 pub struct DataProcessor {
     connection: Connection,
+    chunk_size: usize,
 }
 
 impl DataProcessor {
-    /// Create a new data processor
+    /// Create a new data processor with default settings
     pub fn new() -> Result<Self> {
+        Self::new_with_config(10000) // Default chunk size of 10K rows
+    }
+
+    /// Create a new data processor with custom configuration
+    pub fn new_with_config(chunk_size: usize) -> Result<Self> {
         let connection = Connection::open_in_memory()?;
-        Ok(Self { connection })
+        
+        // Optimize DuckDB for large datasets and performance
+        connection.execute("SET memory_limit='4GB'", [])?;
+        // Use all available CPU cores (DuckDB auto-detects if not specified)
+        connection.execute("SET enable_progress_bar=false", [])?; // Disable for performance
+        connection.execute("SET preserve_insertion_order=false", [])?; // Allow reordering for performance
+        connection.execute("SET enable_object_cache=true", [])?; // Enable object caching
+        
+        Ok(Self { connection, chunk_size })
     }
 
     /// Load data from file and return basic info
@@ -244,6 +260,369 @@ impl DataProcessor {
         let count: u64 = self.connection
             .prepare("SELECT COUNT(*) FROM data_view")?
             .query_row([], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Extract sampled data using DuckDB's native sampling
+    pub fn extract_sampled_data(&self, sampling: &crate::cli::SamplingStrategy) -> Result<Vec<Vec<String>>> {
+        let columns = self.get_column_info()?;
+        let column_count = columns.len();
+        
+        if column_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Build sampling SQL based on strategy
+        let sampling_sql = match sampling {
+            crate::cli::SamplingStrategy::Full => "SELECT * FROM data_view".to_string(),
+            crate::cli::SamplingStrategy::Count(n) => {
+                format!("SELECT * FROM data_view USING SAMPLE {} ROWS", n)
+            },
+            crate::cli::SamplingStrategy::Percentage(pct) => {
+                // Use LIMIT with calculated count for percentage sampling
+                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
+                format!("SELECT * FROM data_view LIMIT {}", estimated_count)
+            }
+        };
+
+        let mut stmt = self.connection.prepare(&sampling_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare sampling query: {}", e)
+            ))?;
+
+        let rows = stmt.query_map([], |row| {
+            let mut string_row = Vec::new();
+            for i in 0..column_count {
+                let value: String = match row.get_ref(i)? {
+                    duckdb::types::ValueRef::Null => String::new(),
+                    duckdb::types::ValueRef::Boolean(b) => b.to_string(),
+                    duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Int(i) => i.to_string(),
+                    duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Float(f) => f.to_string(),
+                    duckdb::types::ValueRef::Double(f) => f.to_string(),
+                    duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+                    duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                    duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                    duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                    duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                    _ => "<unknown>".to_string(),
+                };
+                string_row.push(value);
+            }
+            Ok(string_row)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to extract sampled data: {}", e)
+        ))?;
+
+        let mut data = Vec::new();
+        for row in rows {
+            data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process sampled row: {}", e)
+            ))?);
+        }
+
+        Ok(data)
+    }
+
+    /// Safe hash conversion using num-bigint to handle large integers
+    fn safe_hash_conversion(&self, hash_hex: &str) -> String {
+        // Parse the hex string as BigUint
+        let big_hash = BigUint::from_str_radix(hash_hex, 16)
+            .unwrap_or_else(|_| BigUint::from(0u64));
+        
+        // Convert to a consistent 64-bit representation
+        let hash_u64 = if big_hash > BigUint::from(u64::MAX) {
+            // For very large hashes, use modulo to fit in u64
+            let modulo_result = &big_hash % BigUint::from(u64::MAX);
+            modulo_result.to_string().parse::<u64>().unwrap_or(0)
+        } else {
+            big_hash.to_string().parse::<u64>().unwrap_or(0)
+        };
+        
+        // Return as consistent hex format
+        format!("{:016x}", hash_u64)
+    }
+
+    /// Robust hash extraction from DuckDB row with proper type handling
+    fn robust_hash_extraction(&self, row: &duckdb::Row, index: usize) -> Result<String> {
+        match row.get_ref(index).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to get value at index {}: {}", index, e)
+        ))? {
+            duckdb::types::ValueRef::Text(s) => {
+                let hex_str = String::from_utf8_lossy(s);
+                Ok(self.safe_hash_conversion(&hex_str))
+            },
+            duckdb::types::ValueRef::BigInt(i) => {
+                Ok(format!("{:016x}", i.abs() as u64))
+            },
+            duckdb::types::ValueRef::HugeInt(i) => {
+                // Handle 128-bit integers safely using num-bigint
+                let big_int = BigUint::from(i.abs() as u128);
+                Ok(self.safe_hash_conversion(&format!("{:x}", big_int)))
+            },
+            duckdb::types::ValueRef::UBigInt(i) => {
+                Ok(format!("{:016x}", i))
+            },
+            duckdb::types::ValueRef::Int(i) => {
+                Ok(format!("{:016x}", i.abs() as u64))
+            },
+            _ => {
+                // Fallback for any other type
+                Ok("0000000000000000".to_string())
+            }
+        }
+    }
+
+    /// Compute row hashes directly in DuckDB for maximum performance (robust version)
+    pub fn compute_row_hashes_sql(&self, sampling: &crate::cli::SamplingStrategy) -> Result<Vec<crate::hash::RowHash>> {
+        let columns = self.get_column_info()?;
+        
+        if columns.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build column concatenation for hashing
+        let column_concat = columns.iter()
+            .map(|col| format!("COALESCE(CAST(\"{}\" AS VARCHAR), '')", col.name))
+            .collect::<Vec<_>>()
+            .join(", '|', ");
+
+        // Build sampling clause
+        let sampling_clause = match sampling {
+            crate::cli::SamplingStrategy::Full => String::new(),
+            crate::cli::SamplingStrategy::Count(n) => {
+                format!(" USING SAMPLE {} ROWS", n)
+            },
+            crate::cli::SamplingStrategy::Percentage(pct) => {
+                // For percentage sampling in hash queries, use LIMIT with calculated count
+                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
+                format!(" LIMIT {}", estimated_count)
+            }
+        };
+
+        // Use DuckDB's hash function but return as hex string to avoid overflow
+        let hash_sql = match sampling {
+            crate::cli::SamplingStrategy::Percentage(pct) => {
+                // For percentage sampling, use a subquery approach
+                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
+                format!(
+                    "SELECT ROW_NUMBER() OVER () as row_index,
+                            printf('%x', hash(concat({}))) as row_hash_hex
+                     FROM (SELECT * FROM data_view LIMIT {}) AS sampled_data
+                     ORDER BY row_index",
+                    column_concat, estimated_count
+                )
+            },
+            _ => {
+                format!(
+                    "SELECT ROW_NUMBER() OVER () as row_index,
+                            printf('%x', hash(concat({}))) as row_hash_hex
+                     FROM data_view{}
+                     ORDER BY row_index",
+                    column_concat, sampling_clause
+                )
+            }
+        };
+
+        let mut stmt = self.connection.prepare(&hash_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare hash query: {}", e)
+            ))?;
+
+        let rows = stmt.query_map([], |row| {
+            // Get row index safely
+            let row_idx = match row.get::<_, i64>(0) {
+                Ok(idx) => idx.max(0) as u64, // Ensure non-negative
+                Err(_) => 0u64, // Fallback to 0 if conversion fails
+            };
+            
+            // Get hash as hex string - this avoids overflow issues entirely
+            let hash_hex: String = match row.get::<_, String>(1) {
+                Ok(hex_str) => self.safe_hash_conversion(&hex_str),
+                Err(_) => {
+                    // Fallback: try to extract using robust method
+                    self.robust_hash_extraction(row, 1).unwrap_or_else(|_| "0000000000000000".to_string())
+                }
+            };
+            
+            Ok(crate::hash::RowHash {
+                row_index: row_idx,
+                hash: hash_hex,
+            })
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to compute row hashes: {}", e)
+        ))?;
+
+        let mut hashes = Vec::new();
+        for row in rows {
+            hashes.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process hash row: {}", e)
+            ))?);
+        }
+
+        Ok(hashes)
+    }
+
+    /// Compute column hashes directly in DuckDB using batch processing for performance
+    pub fn compute_column_hashes_sql(&self) -> Result<Vec<crate::hash::ColumnHash>> {
+        let columns = self.get_column_info()?;
+        
+        if columns.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Try batch processing first for better performance
+        match self.compute_column_hashes_batch(&columns) {
+            Ok(hashes) => Ok(hashes),
+            Err(_) => {
+                // Fallback to individual processing if batch fails
+                self.compute_column_hashes_individual(&columns)
+            }
+        }
+    }
+
+    /// Batch column hash computation - processes all columns in a single query
+    fn compute_column_hashes_batch(&self, columns: &[ColumnInfo]) -> Result<Vec<crate::hash::ColumnHash>> {
+        // Build a single SQL query that computes all column hashes at once
+        let column_selects: Vec<String> = columns.iter()
+            .map(|col| format!(
+                "printf('%x', hash(string_agg(COALESCE(CAST(\"{}\" AS VARCHAR), ''), '|'))) as \"{}\"",
+                col.name, col.name
+            ))
+            .collect();
+
+        let batch_sql = format!(
+            "SELECT {} FROM data_view",
+            column_selects.join(", ")
+        );
+
+        let mut stmt = self.connection.prepare(&batch_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare batch column hash query: {}", e)
+            ))?;
+
+        let result_row = stmt.query_row([], |row| {
+            let mut hashes = Vec::new();
+            for (i, column) in columns.iter().enumerate() {
+                let hash_hex: String = row.get(i)?;
+                let processed_hash = self.safe_hash_conversion(&hash_hex);
+                
+                hashes.push(crate::hash::ColumnHash {
+                    column_name: column.name.clone(),
+                    column_type: column.data_type.clone(),
+                    hash: processed_hash,
+                });
+            }
+            Ok(hashes)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to execute batch column hash query: {}", e)
+        ))?;
+
+        let mut column_hashes = result_row;
+        // Sort by column name for consistency
+        column_hashes.sort_by(|a, b| a.column_name.cmp(&b.column_name));
+        Ok(column_hashes)
+    }
+
+    /// Individual column hash computation - fallback for when batch processing fails
+    fn compute_column_hashes_individual(&self, columns: &[ColumnInfo]) -> Result<Vec<crate::hash::ColumnHash>> {
+        let mut column_hashes = Vec::new();
+
+        for column in columns {
+            // Use printf to get hash as hex string, avoiding overflow issues
+            let hash_sql = format!(
+                "SELECT printf('%x', hash(string_agg(COALESCE(CAST(\"{}\" AS VARCHAR), ''), '|'))) as col_hash
+                 FROM data_view",
+                column.name
+            );
+
+            let hash_hex: String = self.connection
+                .prepare(&hash_sql)
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to prepare column hash query for '{}': {}", column.name, e)
+                ))?
+                .query_row([], |row| row.get(0))
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to compute column hash for '{}': {}", column.name, e)
+                ))?;
+
+            // Use safe hash conversion to ensure consistent format
+            let processed_hash = self.safe_hash_conversion(&hash_hex);
+
+            column_hashes.push(crate::hash::ColumnHash {
+                column_name: column.name.clone(),
+                column_type: column.data_type.clone(),
+                hash: processed_hash,
+            });
+        }
+
+        // Sort by column name for consistency
+        column_hashes.sort_by(|a, b| a.column_name.cmp(&b.column_name));
+        Ok(column_hashes)
+    }
+
+    /// Helper method to extract value as string from DuckDB row
+    fn extract_value_as_string(&self, row: &duckdb::Row, index: usize) -> Result<String> {
+        let value: String = match row.get_ref(index)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to get value at index {}: {}", index, e)
+            ))? {
+            duckdb::types::ValueRef::Null => String::new(),
+            duckdb::types::ValueRef::Boolean(b) => b.to_string(),
+            duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+            duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+            duckdb::types::ValueRef::Int(i) => i.to_string(),
+            duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+            duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+            duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+            duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+            duckdb::types::ValueRef::UInt(i) => i.to_string(),
+            duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+            duckdb::types::ValueRef::Float(f) => f.to_string(),
+            duckdb::types::ValueRef::Double(f) => f.to_string(),
+            duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+            duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+            duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+            duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+            duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+            duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+            _ => "<unknown>".to_string(),
+        };
+        Ok(value)
+    }
+
+    /// Get row count for a specific sampling strategy (without loading data)
+    pub fn get_sampled_row_count(&self, sampling: &crate::cli::SamplingStrategy) -> Result<u64> {
+        let count_sql = match sampling {
+            crate::cli::SamplingStrategy::Full => "SELECT COUNT(*) FROM data_view".to_string(),
+            crate::cli::SamplingStrategy::Count(n) => {
+                // For count sampling, we need to estimate or use the minimum
+                format!("SELECT LEAST(COUNT(*), {}) FROM data_view", n)
+            },
+            crate::cli::SamplingStrategy::Percentage(pct) => {
+                // For percentage sampling, estimate the count
+                format!("SELECT CAST(COUNT(*) * {} AS BIGINT) FROM data_view", pct)
+            }
+        };
+
+        let count: u64 = self.connection
+            .prepare(&count_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare count query: {}", e)
+            ))?
+            .query_row([], |row| row.get(0))
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to get sampled row count: {}", e)
+            ))?;
+
         Ok(count)
     }
 

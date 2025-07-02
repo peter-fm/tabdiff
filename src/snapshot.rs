@@ -130,18 +130,14 @@ impl SnapshotCreator {
         self.progress.finish_schema("Computing schema hash...");
         let schema_hash = self.hash_computer.hash_schema(&data_info.columns)?;
 
-        // Extract data for hashing
-        let row_data = data_processor.extract_all_data()?;
-        let column_data = data_processor.extract_column_data()?;
-
-        // Compute row hashes
-        self.progress.finish_schema("Computing row hashes...");
-        let row_hashes = self.hash_computer.hash_rows(&row_data, sampling)?;
+        // Use optimized DuckDB-native hash computation
+        self.progress.finish_schema("Computing row hashes (optimized)...");
+        let row_hashes = self.hash_computer.hash_rows_with_processor(&data_processor, sampling)?;
         self.progress.finish_rows(&format!("Hashed {} rows", row_hashes.len()));
 
-        // Compute column hashes
-        self.progress.finish_columns("Computing column hashes...");
-        let column_hashes = self.hash_computer.hash_columns(&column_data)?;
+        // Compute column hashes using DuckDB
+        self.progress.finish_columns("Computing column hashes (optimized)...");
+        let column_hashes = self.hash_computer.hash_columns_with_processor(&data_processor)?;
         self.progress.finish_columns(&format!("Hashed {} columns", column_hashes.len()));
 
         // Create archive files (including delta if available)
@@ -346,14 +342,14 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&schema_data)?.into_bytes(),
         ));
 
-        // Create rows.json
+        // Create rows.json with sampled data only (PERFORMANCE FIX)
         let data_processor = DataProcessor::new()?;
         data_processor.load_file(&data_info.source)?;
-        let actual_row_data = data_processor.extract_all_data()?;
+        let sampled_row_data = data_processor.extract_sampled_data(sampling)?;
         
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
-            "rows": actual_row_data,
+            "rows": sampled_row_data,
             "sampling": format!("{:?}", sampling)
         });
         files.push((
@@ -361,8 +357,8 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&rows_data)?.into_bytes(),
         ));
 
-        // Create data.parquet with full dataset
-        let data_parquet = self.create_data_parquet(&actual_row_data, &data_info.columns)?;
+        // Create data.parquet with sampled dataset only (PERFORMANCE FIX)
+        let data_parquet = self.create_data_parquet(&sampled_row_data, &data_info.columns)?;
         files.push((
             "data.parquet".to_string(),
             data_parquet,

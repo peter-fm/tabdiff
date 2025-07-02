@@ -126,7 +126,7 @@ impl HashComputer {
         Ok(column_hashes)
     }
 
-    /// Compute row hashes with sampling strategy
+    /// Compute row hashes with sampling strategy (legacy method for compatibility)
     pub fn hash_rows(
         &self,
         row_data: &[Vec<String>],
@@ -171,6 +171,25 @@ impl HashComputer {
             .collect();
 
         Ok(row_hashes)
+    }
+
+    /// Compute row hashes using DuckDB-native operations (high performance)
+    pub fn hash_rows_with_processor(
+        &self,
+        data_processor: &crate::data::DataProcessor,
+        sampling: &SamplingStrategy,
+    ) -> Result<Vec<RowHash>> {
+        // Use the optimized DuckDB-native hash computation
+        data_processor.compute_row_hashes_sql(sampling)
+    }
+
+    /// Compute column hashes using DuckDB-native operations (high performance)
+    pub fn hash_columns_with_processor(
+        &self,
+        data_processor: &crate::data::DataProcessor,
+    ) -> Result<Vec<ColumnHash>> {
+        // Use the optimized DuckDB-native column hash computation
+        data_processor.compute_column_hashes_sql()
     }
 
     /// Sample random indices

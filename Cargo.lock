@@ -1701,6 +1701,8 @@ dependencies = [
  "env_logger",
  "indicatif",
  "log",
+ "num-bigint",
+ "num-traits",
  "parquet",
  "rayon",
  "serde",
