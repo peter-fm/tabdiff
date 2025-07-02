@@ -379,7 +379,7 @@ impl DataProcessor {
         self.compute_row_hashes_with_progress(None)
     }
 
-    /// Compute row hashes with streaming row-by-row processing (revolutionary approach)
+    /// Compute row hashes with deterministic ordering and full hash precision
     pub fn compute_row_hashes_with_progress(
         &mut self,
         progress_callback: Option<&dyn Fn(u64, u64)>,
@@ -399,23 +399,30 @@ impl DataProcessor {
             return Ok(Vec::new());
         }
 
-        // REVOLUTIONARY APPROACH: Simple streaming without complex SQL
-        // Use basic SELECT * and process row-by-row in Rust
-        eprintln!("Starting streaming processing of {} rows...", total_rows);
+        eprintln!("Starting deterministic processing of {} rows...", total_rows);
         
         let mut all_hashes = Vec::new();
         let mut processed_rows = 0u64;
         let start_time = std::time::Instant::now();
         
-        // Simple SQL - just get all data without complex operations
-        let simple_sql = "SELECT * FROM data_view";
+        // CRITICAL FIX: Use deterministic ordering based on all columns
+        // This ensures consistent row order between snapshots
+        let column_list = columns.iter()
+            .map(|c| format!("\"{}\"", c.name))
+            .collect::<Vec<_>>()
+            .join(", ");
         
-        let mut stmt = self.connection.prepare(simple_sql)
+        let deterministic_sql = format!(
+            "SELECT {} FROM data_view ORDER BY {}",
+            column_list, column_list
+        );
+        
+        let mut stmt = self.connection.prepare(&deterministic_sql)
             .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare simple streaming query: {}", e)
+                format!("Failed to prepare deterministic query: {}", e)
             ))?;
 
-        eprintln!("Query prepared, starting row iteration...");
+        eprintln!("Deterministic query prepared, starting row iteration...");
         
         let rows = stmt.query_map([], |row| {
             // Extract all column values for this row
@@ -433,8 +440,14 @@ impl DataProcessor {
                     Ok(duckdb::types::ValueRef::USmallInt(i)) => i.to_string(),
                     Ok(duckdb::types::ValueRef::UInt(i)) => i.to_string(),
                     Ok(duckdb::types::ValueRef::UBigInt(i)) => i.to_string(),
-                    Ok(duckdb::types::ValueRef::Float(f)) => f.to_string(),
-                    Ok(duckdb::types::ValueRef::Double(f)) => f.to_string(),
+                    Ok(duckdb::types::ValueRef::Float(f)) => {
+                        // Use consistent float formatting to avoid precision issues
+                        format!("{:.10}", f)
+                    },
+                    Ok(duckdb::types::ValueRef::Double(f)) => {
+                        // Use consistent double formatting to avoid precision issues
+                        format!("{:.15}", f)
+                    },
                     Ok(duckdb::types::ValueRef::Decimal(d)) => d.to_string(),
                     Ok(duckdb::types::ValueRef::Text(s)) => String::from_utf8_lossy(s).to_string(),
                     Ok(duckdb::types::ValueRef::Blob(b)) => format!("<blob:{} bytes>", b.len()),
@@ -459,14 +472,13 @@ impl DataProcessor {
                 format!("Failed to process row {}: {}", row_index, e)
             ))?;
             
-            // Hash the row values using Blake3
-            let row_content = row_values.join("|");
+            // Hash the row values using Blake3 with consistent separator
+            let row_content = row_values.join("||"); // Use || to avoid conflicts with | in data
             let hash = blake3::hash(row_content.as_bytes());
-            let hash_hex = format!("{:016x}", 
-                hash.as_bytes()[0..8]
-                    .iter()
-                    .fold(0u64, |acc, &b| (acc << 8) | b as u64)
-            );
+            
+            // CRITICAL FIX: Use full Blake3 hash instead of truncated version
+            // This dramatically reduces collision probability for large datasets
+            let hash_hex = hash.to_hex().to_string();
             
             all_hashes.push(crate::hash::RowHash {
                 row_index: row_index as u64,
@@ -497,7 +509,7 @@ impl DataProcessor {
         }
         
         // Final newline after progress
-        eprintln!("\nStreaming processing completed!");
+        eprintln!("\nDeterministic processing completed!");
         
         Ok(all_hashes)
     }

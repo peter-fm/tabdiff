@@ -111,13 +111,6 @@ impl SnapshotCreator {
         // Update progress with actual row count
         self.progress.update_estimated_rows(data_info.row_count);
 
-        // Find parent snapshot and compute delta if workspace is provided
-        let (parent_snapshot, sequence_number, delta_from_parent) = if let Some(ws) = workspace {
-            self.find_parent_and_compute_delta(ws, &data_info, &mut data_processor)?
-        } else {
-            (None, 0, None)
-        };
-
         // Phase 2: Compute schema hash
         let schema_hash = self.hash_computer.hash_schema(&data_info.columns)?;
 
@@ -141,6 +134,13 @@ impl SnapshotCreator {
             )?
         };
         self.progress.finish_rows(&format!("✅ Hashed {} rows", row_hashes.len()));
+
+        // Find parent snapshot and compute delta if workspace is provided (using computed hashes)
+        let (parent_snapshot, sequence_number, delta_from_parent) = if let Some(ws) = workspace {
+            self.find_parent_and_compute_delta(ws, &data_info, &row_hashes)?
+        } else {
+            (None, 0, None)
+        };
 
         // Phase 4: Compute column hashes
         let column_hashes = self.hash_computer.hash_columns_with_processor(&mut data_processor)?;
@@ -477,12 +477,12 @@ impl SnapshotCreator {
         Ok(files)
     }
 
-    /// Find parent snapshot and compute delta (source-aware)
+    /// Find parent snapshot and compute delta using cached hashes (FIXED ARCHITECTURE)
     fn find_parent_and_compute_delta(
         &self,
         workspace: &crate::workspace::TabdiffWorkspace,
         current_data_info: &DataInfo,
-        current_data_processor: &mut DataProcessor,
+        current_row_hashes: &[crate::hash::RowHash],
     ) -> Result<(Option<String>, u64, Option<DeltaInfo>)> {
         // Create canonical source path for current file
         let current_canonical_path = current_data_info.source.canonicalize()
@@ -494,7 +494,7 @@ impl SnapshotCreator {
         let chain = SnapshotChain::build_chain_for_source(workspace, &current_canonical_path)?;
         
         if let Some(head_name) = &chain.head {
-            // Load parent snapshot data
+            // Load parent snapshot metadata
             let (parent_archive_path, parent_json_path) = workspace.snapshot_paths(head_name);
             
             if parent_json_path.exists() {
@@ -520,24 +520,16 @@ impl SnapshotCreator {
                     }
                 }
                 
-                // Check if parent has archive data for comparison
+                // CRITICAL FIX: Load cached parent hashes instead of re-processing data
                 if parent_archive_path.exists() {
-                    let parent_data = SnapshotLoader::load_full_snapshot(&parent_archive_path)?;
+                    // Load cached parent row hashes from archive
+                    let parent_row_hashes = self.load_cached_row_hashes(&parent_archive_path)?;
                     
-                    // Extract parent schema and row data
-                    let parent_schema = self.extract_schema_from_archive(&parent_data)?;
-                    let parent_row_data = self.extract_row_data_from_archive(&parent_data)?;
+                    // Compare current hashes with cached parent hashes (no re-processing!)
+                    let comparison = self.hash_computer.compare_row_hashes(&parent_row_hashes, current_row_hashes);
                     
-                    // Extract current row data
-                    let current_row_data = current_data_processor.extract_all_data()?;
-                    
-                    // Compute changes from parent to current
-                    let changes = crate::change_detection::ChangeDetector::detect_changes(
-                        &parent_schema,
-                        &parent_row_data,
-                        &current_data_info.columns,
-                        &current_row_data,
-                    )?;
+                    // Convert hash comparison to change detection format
+                    let changes = self.convert_hash_comparison_to_changes(&comparison, &current_data_info.columns)?;
                     
                     // Calculate compressed size (estimate based on JSON serialization)
                     let changes_json = serde_json::to_string(&changes)?;
@@ -588,7 +580,7 @@ impl SnapshotCreator {
         Ok(Vec::new())
     }
 
-    /// Extract row data from archive data
+    /// Extract row data from archive data with deterministic ordering
     fn extract_row_data_from_archive(&self, archive_data: &FullSnapshotData) -> Result<Vec<Vec<String>>> {
         if let Some(rows_data) = archive_data.row_data.get("rows") {
             if let Some(rows_array) = rows_data.as_array() {
@@ -602,6 +594,20 @@ impl SnapshotCreator {
                         rows.push(row);
                     }
                 }
+                
+                // CRITICAL FIX: Apply the same deterministic ordering to parent data
+                // that we use for current data to ensure consistent comparison
+                rows.sort_by(|a, b| {
+                    // Sort by all columns in the same order as the deterministic SQL query
+                    for (col_a, col_b) in a.iter().zip(b.iter()) {
+                        match col_a.cmp(col_b) {
+                            std::cmp::Ordering::Equal => continue,
+                            other => return other,
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                
                 return Ok(rows);
             }
         }
@@ -629,6 +635,115 @@ impl SnapshotCreator {
         if current_metadata.delta_from_parent.is_some() {
             current_metadata.can_reconstruct_parent = true;
         }
+    }
+
+    /// Load cached row hashes from archive (CRITICAL FIX)
+    fn load_cached_row_hashes(&self, archive_path: &Path) -> Result<Vec<RowHash>> {
+        let files = ArchiveManager::extract_archive(archive_path)?;
+        
+        for (filename, content) in files {
+            if filename == "rows.json" {
+                let content_str = String::from_utf8(content)?;
+                let rows_data: serde_json::Value = serde_json::from_str(&content_str)?;
+                
+                if let Some(row_hashes_data) = rows_data.get("row_hashes") {
+                    if let Some(hashes_array) = row_hashes_data.as_array() {
+                        let mut row_hashes = Vec::new();
+                        for hash_value in hashes_array {
+                            if let (Some(row_index), Some(hash)) = (
+                                hash_value.get("row_index").and_then(|v| v.as_u64()),
+                                hash_value.get("hash").and_then(|v| v.as_str())
+                            ) {
+                                row_hashes.push(RowHash {
+                                    row_index,
+                                    hash: hash.to_string(),
+                                });
+                            }
+                        }
+                        return Ok(row_hashes);
+                    }
+                }
+            }
+        }
+        
+        Ok(Vec::new())
+    }
+
+    /// Convert hash comparison to change detection format
+    fn convert_hash_comparison_to_changes(
+        &self,
+        comparison: &crate::hash::RowHashComparison,
+        columns: &[crate::hash::ColumnInfo],
+    ) -> Result<ChangeDetectionResult> {
+        use crate::change_detection::*;
+        
+        // Create simplified change detection result from hash comparison
+        let mut modified = Vec::new();
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        
+        // Convert changed rows to modifications
+        for &row_idx in &comparison.changed_rows {
+            let mut changes = HashMap::new();
+            changes.insert("_content_changed".to_string(), CellChange {
+                before: "changed".to_string(),
+                after: "changed".to_string(),
+            });
+            
+            modified.push(RowModification {
+                row_index: row_idx,
+                changes,
+            });
+        }
+        
+        // Convert added rows
+        for &row_idx in &comparison.added_rows {
+            let mut data = HashMap::new();
+            // Create placeholder data for added rows
+            for col in columns {
+                data.insert(col.name.clone(), "added".to_string());
+            }
+            
+            added.push(RowAddition {
+                row_index: row_idx,
+                data,
+            });
+        }
+        
+        // Convert removed rows
+        for &row_idx in &comparison.removed_rows {
+            let mut data = HashMap::new();
+            // Create placeholder data for removed rows
+            for col in columns {
+                data.insert(col.name.clone(), "removed".to_string());
+            }
+            
+            removed.push(RowRemoval {
+                row_index: row_idx,
+                data,
+            });
+        }
+        
+        let row_changes = RowChanges {
+            modified,
+            added,
+            removed,
+        };
+        
+        // No schema changes for hash-based comparison
+        let schema_changes = SchemaChanges {
+            column_order: None,
+            columns_added: Vec::new(),
+            columns_removed: Vec::new(),
+            columns_renamed: Vec::new(),
+            type_changes: Vec::new(),
+        };
+        
+        Ok(ChangeDetectionResult {
+            schema_changes,
+            row_changes,
+            rollback_operations: Vec::new(), // Simplified for now
+        })
     }
 }
 

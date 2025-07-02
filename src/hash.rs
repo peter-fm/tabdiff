@@ -197,7 +197,7 @@ impl HashComputer {
         "TEXT".to_string() // Default
     }
 
-    /// Compare two sets of row hashes using content-based comparison
+    /// Compare two sets of row hashes using content-based comparison with quality metrics
     pub fn compare_row_hashes(
         &self,
         base_hashes: &[RowHash],
@@ -213,6 +213,41 @@ impl HashComputer {
             .iter()
             .map(|rh| rh.hash.as_str())
             .collect();
+        
+        // Compute hash quality metrics
+        let total_base_hashes = base_hashes.len() as u64;
+        let unique_base_hashes = base_content_set.len() as u64;
+        let total_compare_hashes = compare_hashes.len() as u64;
+        let unique_compare_hashes = compare_content_set.len() as u64;
+        
+        let base_collision_count = total_base_hashes.saturating_sub(unique_base_hashes);
+        let compare_collision_count = total_compare_hashes.saturating_sub(unique_compare_hashes);
+        
+        let base_collision_rate = if total_base_hashes > 0 {
+            base_collision_count as f64 / total_base_hashes as f64
+        } else {
+            0.0
+        };
+        
+        let compare_collision_rate = if total_compare_hashes > 0 {
+            compare_collision_count as f64 / total_compare_hashes as f64
+        } else {
+            0.0
+        };
+        
+        let hash_quality = HashQualityMetrics {
+            total_base_hashes,
+            unique_base_hashes,
+            total_compare_hashes,
+            unique_compare_hashes,
+            base_collision_count,
+            compare_collision_count,
+            base_collision_rate,
+            compare_collision_rate,
+        };
+        
+        // Print diagnostics for debugging
+        hash_quality.print_diagnostics();
         
         // Create maps from content hash to row indices for tracking which rows changed
         let mut base_content_to_indices: HashMap<&str, Vec<u64>> = HashMap::new();
@@ -294,6 +329,7 @@ impl HashComputer {
             removed_rows,
             total_base: base_hashes.len(),
             total_compare: compare_hashes.len(),
+            hash_quality,
         }
     }
 }
@@ -306,6 +342,7 @@ pub struct RowHashComparison {
     pub removed_rows: Vec<u64>,
     pub total_base: usize,
     pub total_compare: usize,
+    pub hash_quality: HashQualityMetrics,
 }
 
 impl RowHashComparison {
@@ -315,6 +352,57 @@ impl RowHashComparison {
     
     pub fn total_changes(&self) -> usize {
         self.changed_rows.len() + self.added_rows.len() + self.removed_rows.len()
+    }
+}
+
+/// Hash quality metrics for debugging
+#[derive(Debug, Clone)]
+pub struct HashQualityMetrics {
+    pub total_base_hashes: u64,
+    pub unique_base_hashes: u64,
+    pub total_compare_hashes: u64,
+    pub unique_compare_hashes: u64,
+    pub base_collision_count: u64,
+    pub compare_collision_count: u64,
+    pub base_collision_rate: f64,
+    pub compare_collision_rate: f64,
+}
+
+impl HashQualityMetrics {
+    pub fn new() -> Self {
+        Self {
+            total_base_hashes: 0,
+            unique_base_hashes: 0,
+            total_compare_hashes: 0,
+            unique_compare_hashes: 0,
+            base_collision_count: 0,
+            compare_collision_count: 0,
+            base_collision_rate: 0.0,
+            compare_collision_rate: 0.0,
+        }
+    }
+    
+    pub fn has_significant_collisions(&self) -> bool {
+        self.base_collision_rate > 0.01 || self.compare_collision_rate > 0.01 // More than 1% collision rate
+    }
+    
+    pub fn print_diagnostics(&self) {
+        eprintln!("=== Hash Quality Diagnostics ===");
+        eprintln!("Base dataset:");
+        eprintln!("  Total hashes: {}", self.total_base_hashes);
+        eprintln!("  Unique hashes: {}", self.unique_base_hashes);
+        eprintln!("  Collisions: {} ({:.4}%)", self.base_collision_count, self.base_collision_rate * 100.0);
+        eprintln!("Compare dataset:");
+        eprintln!("  Total hashes: {}", self.total_compare_hashes);
+        eprintln!("  Unique hashes: {}", self.unique_compare_hashes);
+        eprintln!("  Collisions: {} ({:.4}%)", self.compare_collision_count, self.compare_collision_rate * 100.0);
+        
+        if self.has_significant_collisions() {
+            eprintln!("⚠️  WARNING: High collision rate detected! This may cause false change detection.");
+        } else {
+            eprintln!("✅ Hash quality looks good - low collision rate.");
+        }
+        eprintln!("===============================");
     }
 }
 
@@ -403,5 +491,10 @@ mod tests {
         
         // The removed row should be the one that contained "B,2" (originally at index 1)
         assert!(comparison.removed_rows.contains(&1));
+        
+        // Check hash quality metrics
+        assert_eq!(comparison.hash_quality.total_base_hashes, 5);
+        assert_eq!(comparison.hash_quality.total_compare_hashes, 4);
+        assert!(!comparison.hash_quality.has_significant_collisions());
     }
 }
