@@ -63,7 +63,7 @@ fn test_schema_evolution_workflow() {
 }
 
 #[test]
-fn test_sampling_workflow() {
+fn test_batch_processing_workflow() {
     let runner = CliTestRunner::new().unwrap();
     
     runner.expect_success(&["init"]);
@@ -71,36 +71,34 @@ fn test_sampling_workflow() {
     // Create moderately large dataset (reduced from 10k to 1k rows for speed)
     let large_csv = runner.fixture().create_large_csv("large_data.csv", 1000, 5).unwrap();
     
-    // Full snapshot
+    // Full snapshot with default batch size
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
-        "--name", "full", 
-        "--sample", "full"
+        "--name", "full"
     ]);
     
-    // Percentage sampling
+    // Snapshot with small batch size
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
-        "--name", "sampled_10pct", 
-        "--sample", "10%"
+        "--name", "small_batch", 
+        "--batch-size", "100"
     ]);
     
-    // Count sampling
+    // Snapshot with large batch size
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
-        "--name", "sampled_100", 
-        "--sample", "100"
+        "--name", "large_batch", 
+        "--batch-size", "5000"
     ]);
     
-    // Compare different sampling strategies
-    runner.expect_success(&["diff", "full", "sampled_10pct"]);
-    runner.expect_success(&["diff", "sampled_10pct", "sampled_100"]);
+    // Compare different batch processing strategies
+    runner.expect_success(&["diff", "full", "small_batch"]);
+    runner.expect_success(&["diff", "small_batch", "large_batch"]);
     
-    // Status check with sampling
+    // Status check with batch processing
     runner.expect_success(&[
         "status", large_csv.to_str().unwrap(), 
-        "--compare-to", "full", 
-        "--sample", "5%"
+        "--compare-to", "full"
     ]);
 }
 
@@ -168,7 +166,6 @@ fn test_ci_cd_workflow() {
     runner.expect_success(&[
         "status", dev_csv.to_str().unwrap(), 
         "--compare-to", "production", 
-        "--sample", "1000",
         "--json"
     ]);
     
@@ -227,11 +224,10 @@ fn test_large_dataset_workflow() {
     // Create moderately large dataset (reduced from 50k to 1k rows for speed)
     let large_csv = runner.fixture().create_large_csv("large.csv", 1000, 10).unwrap();
     
-    // Initial snapshot with sampling
+    // Initial snapshot with batch processing
     runner.expect_success(&[
         "snapshot", large_csv.to_str().unwrap(), 
         "--name", "large_baseline", 
-        "--sample", "10%",
         "--batch-size", "500"
     ]);
     
@@ -239,7 +235,6 @@ fn test_large_dataset_workflow() {
     runner.expect_success(&[
         "status", large_csv.to_str().unwrap(), 
         "--compare-to", "large_baseline", 
-        "--sample", "5%",
         "--quiet"
     ]);
     

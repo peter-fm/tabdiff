@@ -38,10 +38,6 @@ pub enum Commands {
         #[arg(long)]
         name: String,
         
-        /// Sampling strategy: "full", "N%" (e.g., "10%"), or "N" (e.g., "1000")
-        #[arg(long, default_value = "full")]
-        sample: String,
-        
         /// Batch size for processing rows (must be > 0)
         #[arg(long, default_value = "10000", value_parser = validate_batch_size)]
         batch_size: usize,
@@ -90,10 +86,6 @@ pub enum Commands {
         /// Snapshot to compare against (defaults to latest)
         #[arg(long)]
         compare_to: Option<String>,
-        
-        /// Sampling strategy: "full", "N%" (e.g., "10%"), or "N" (e.g., "1000")
-        #[arg(long, default_value = "1000")]
-        sample: String,
         
         /// Quiet output (machine-readable)
         #[arg(long)]
@@ -156,36 +148,6 @@ pub enum Commands {
     },
 }
 
-/// Parse sampling strategy string into structured format
-#[derive(Debug, Clone)]
-pub enum SamplingStrategy {
-    Full,
-    Percentage(f64),  // 0.0 to 1.0
-    Count(usize),
-}
-
-impl SamplingStrategy {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "full" => Ok(Self::Full),
-            s if s.ends_with('%') => {
-                let pct_str = &s[..s.len() - 1];
-                let pct: f64 = pct_str.parse()
-                    .map_err(|_| format!("Invalid percentage: {}", s))?;
-                if pct < 0.0 || pct > 100.0 {
-                    return Err(format!("Percentage must be between 0 and 100: {}", pct));
-                }
-                Ok(Self::Percentage(pct / 100.0))
-            }
-            s => {
-                let count: usize = s.parse()
-                    .map_err(|_| format!("Invalid count: {}", s))?;
-                Ok(Self::Count(count))
-            }
-        }
-    }
-}
-
 /// Parse diff mode string
 #[derive(Debug, Clone)]
 pub enum DiffMode {
@@ -237,15 +199,6 @@ fn validate_batch_size(s: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_sampling_strategy_parse() {
-        assert!(matches!(SamplingStrategy::parse("full"), Ok(SamplingStrategy::Full)));
-        assert!(matches!(SamplingStrategy::parse("10%"), Ok(SamplingStrategy::Percentage(p)) if (p - 0.1).abs() < f64::EPSILON));
-        assert!(matches!(SamplingStrategy::parse("1000"), Ok(SamplingStrategy::Count(1000))));
-        assert!(SamplingStrategy::parse("invalid").is_err());
-        assert!(SamplingStrategy::parse("150%").is_err());
-    }
 
     #[test]
     fn test_diff_mode_parse() {

@@ -263,74 +263,6 @@ impl DataProcessor {
         Ok(count)
     }
 
-    /// Extract sampled data using DuckDB's native sampling
-    pub fn extract_sampled_data(&self, sampling: &crate::cli::SamplingStrategy) -> Result<Vec<Vec<String>>> {
-        let columns = self.get_column_info()?;
-        let column_count = columns.len();
-        
-        if column_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Build sampling SQL based on strategy
-        let sampling_sql = match sampling {
-            crate::cli::SamplingStrategy::Full => "SELECT * FROM data_view".to_string(),
-            crate::cli::SamplingStrategy::Count(n) => {
-                format!("SELECT * FROM data_view USING SAMPLE {} ROWS", n)
-            },
-            crate::cli::SamplingStrategy::Percentage(pct) => {
-                // Use LIMIT with calculated count for percentage sampling
-                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
-                format!("SELECT * FROM data_view LIMIT {}", estimated_count)
-            }
-        };
-
-        let mut stmt = self.connection.prepare(&sampling_sql)
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare sampling query: {}", e)
-            ))?;
-
-        let rows = stmt.query_map([], |row| {
-            let mut string_row = Vec::new();
-            for i in 0..column_count {
-                let value: String = match row.get_ref(i)? {
-                    duckdb::types::ValueRef::Null => String::new(),
-                    duckdb::types::ValueRef::Boolean(b) => b.to_string(),
-                    duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::Int(i) => i.to_string(),
-                    duckdb::types::ValueRef::BigInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::Float(f) => f.to_string(),
-                    duckdb::types::ValueRef::Double(f) => f.to_string(),
-                    duckdb::types::ValueRef::Decimal(d) => d.to_string(),
-                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
-                    duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
-                    duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
-                    duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
-                    duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
-                    _ => "<unknown>".to_string(),
-                };
-                string_row.push(value);
-            }
-            Ok(string_row)
-        }).map_err(|e| crate::error::TabdiffError::data_processing(
-            format!("Failed to extract sampled data: {}", e)
-        ))?;
-
-        let mut data = Vec::new();
-        for row in rows {
-            data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to process sampled row: {}", e)
-            ))?);
-        }
-
-        Ok(data)
-    }
 
     /// Safe hash conversion using num-bigint to handle large integers
     fn safe_hash_conversion(&self, hash_hex: &str) -> String {
@@ -382,7 +314,7 @@ impl DataProcessor {
     }
 
     /// Compute row hashes directly in DuckDB for maximum performance (robust version)
-    pub fn compute_row_hashes_sql(&self, sampling: &crate::cli::SamplingStrategy) -> Result<Vec<crate::hash::RowHash>> {
+    pub fn compute_row_hashes_sql(&self) -> Result<Vec<crate::hash::RowHash>> {
         let columns = self.get_column_info()?;
         
         if columns.is_empty() {
@@ -395,42 +327,14 @@ impl DataProcessor {
             .collect::<Vec<_>>()
             .join(", '|', ");
 
-        // Build sampling clause
-        let sampling_clause = match sampling {
-            crate::cli::SamplingStrategy::Full => String::new(),
-            crate::cli::SamplingStrategy::Count(n) => {
-                format!(" USING SAMPLE {} ROWS", n)
-            },
-            crate::cli::SamplingStrategy::Percentage(pct) => {
-                // For percentage sampling in hash queries, use LIMIT with calculated count
-                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
-                format!(" LIMIT {}", estimated_count)
-            }
-        };
-
         // Use DuckDB's hash function but return as hex string to avoid overflow
-        let hash_sql = match sampling {
-            crate::cli::SamplingStrategy::Percentage(pct) => {
-                // For percentage sampling, use a subquery approach
-                let estimated_count = format!("(SELECT CAST(COUNT(*) * {} AS INTEGER) FROM data_view)", pct);
-                format!(
-                    "SELECT ROW_NUMBER() OVER () as row_index,
-                            printf('%x', hash(concat({}))) as row_hash_hex
-                     FROM (SELECT * FROM data_view LIMIT {}) AS sampled_data
-                     ORDER BY row_index",
-                    column_concat, estimated_count
-                )
-            },
-            _ => {
-                format!(
-                    "SELECT ROW_NUMBER() OVER () as row_index,
-                            printf('%x', hash(concat({}))) as row_hash_hex
-                     FROM data_view{}
-                     ORDER BY row_index",
-                    column_concat, sampling_clause
-                )
-            }
-        };
+        let hash_sql = format!(
+            "SELECT ROW_NUMBER() OVER () as row_index,
+                    printf('%x', hash(concat({}))) as row_hash_hex
+             FROM data_view
+             ORDER BY row_index",
+            column_concat
+        );
 
         let mut stmt = self.connection.prepare(&hash_sql)
             .map_err(|e| crate::error::TabdiffError::data_processing(
@@ -599,32 +503,6 @@ impl DataProcessor {
         Ok(value)
     }
 
-    /// Get row count for a specific sampling strategy (without loading data)
-    pub fn get_sampled_row_count(&self, sampling: &crate::cli::SamplingStrategy) -> Result<u64> {
-        let count_sql = match sampling {
-            crate::cli::SamplingStrategy::Full => "SELECT COUNT(*) FROM data_view".to_string(),
-            crate::cli::SamplingStrategy::Count(n) => {
-                // For count sampling, we need to estimate or use the minimum
-                format!("SELECT LEAST(COUNT(*), {}) FROM data_view", n)
-            },
-            crate::cli::SamplingStrategy::Percentage(pct) => {
-                // For percentage sampling, estimate the count
-                format!("SELECT CAST(COUNT(*) * {} AS BIGINT) FROM data_view", pct)
-            }
-        };
-
-        let count: u64 = self.connection
-            .prepare(&count_sql)
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare count query: {}", e)
-            ))?
-            .query_row([], |row| row.get(0))
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to get sampled row count: {}", e)
-            ))?;
-
-        Ok(count)
-    }
 
     /// Check if file format is supported
     pub fn is_supported_format(file_path: &Path) -> bool {

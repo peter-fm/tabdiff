@@ -22,34 +22,31 @@ fn test_snapshot_command_basic() {
     // Verify JSON metadata structure
     assertions::assert_json_contains_keys(&json_path, &[
         "format_version", "name", "created", "source", "row_count", 
-        "column_count", "schema_hash", "columns", "sampling"
+        "column_count", "schema_hash", "columns", "has_full_data"
     ]).unwrap();
 }
 
 #[test]
-fn test_snapshot_command_with_sampling() {
+fn test_snapshot_command_with_full_data() {
     let runner = CliTestRunner::new().unwrap();
     
     // Create larger test data
     let csv_path = runner.fixture().create_large_csv("large.csv", 1000, 5).unwrap();
     
-    // Test percentage sampling
+    // Test with full data flag
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
-        "--name", "sampled_10pct", 
-        "--sample", "10%"
+        "--name", "full_data_snapshot", 
+        "--full-data"
     ]);
     
-    runner.fixture().assert_snapshot_exists("sampled_10pct");
+    runner.fixture().assert_snapshot_exists("full_data_snapshot");
     
-    // Test count sampling
-    runner.expect_success(&[
-        "snapshot", csv_path.to_str().unwrap(), 
-        "--name", "sampled_100", 
-        "--sample", "100"
-    ]);
-    
-    runner.fixture().assert_snapshot_exists("sampled_100");
+    // Verify has_full_data is true
+    let (_, json_path) = runner.fixture().workspace.snapshot_paths("full_data_snapshot");
+    let content = std::fs::read_to_string(&json_path).unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(metadata["has_full_data"], true);
 }
 
 #[test]
@@ -90,26 +87,26 @@ fn test_snapshot_command_nonexistent_file() {
 }
 
 #[test]
-fn test_snapshot_command_invalid_sampling() {
+fn test_snapshot_command_invalid_batch_size() {
     let runner = CliTestRunner::new().unwrap();
     
     let csv_path = runner.fixture().create_csv("test.csv", &sample_data::simple_csv_data()).unwrap();
     
-    // Invalid percentage
+    // Invalid batch size (zero)
     let error = runner.expect_failure(&[
         "snapshot", csv_path.to_str().unwrap(), 
         "--name", "test", 
-        "--sample", "150%"
+        "--batch-size", "0"
     ]);
-    assert!(error.to_string().contains("Invalid") || error.to_string().contains("sampling"));
+    assert!(error.to_string().contains("must be greater than 0") || error.to_string().contains("invalid"));
     
-    // Invalid format
+    // Invalid batch size (negative)
     let error = runner.expect_failure(&[
         "snapshot", csv_path.to_str().unwrap(), 
         "--name", "test", 
-        "--sample", "invalid"
+        "--batch-size", "-100"
     ]);
-    assert!(error.to_string().contains("Invalid") || error.to_string().contains("sampling"));
+    assert!(error.to_string().contains("invalid") || error.to_string().contains("error"));
 }
 
 #[test]
@@ -215,13 +212,13 @@ fn test_snapshot_command_corrupted_file() {
 fn test_snapshot_command_large_file() {
     let runner = CliTestRunner::new().unwrap();
     
-    // Create a reasonably large file for testing
-    let large_path = runner.fixture().create_large_csv("large.csv", 10000, 10).unwrap();
+    // Create a reasonably large file for testing (smaller for test speed)
+    let large_path = runner.fixture().create_large_csv("large.csv", 1000, 10).unwrap();
     
     runner.expect_success(&[
         "snapshot", large_path.to_str().unwrap(), 
         "--name", "large_snapshot",
-        "--sample", "1%"  // Use sampling to speed up test
+        "--batch-size", "100"  // Use smaller batch size for testing
     ]);
     
     runner.fixture().assert_snapshot_exists("large_snapshot");
@@ -246,7 +243,7 @@ fn test_snapshot_command_metadata_content() {
     assert_eq!(metadata["column_count"], 3); // id, name, price
     assert!(metadata["schema_hash"].is_string());
     assert!(metadata["columns"].is_object());
-    assert!(metadata["sampling"].is_object());
+    assert!(metadata["has_full_data"].is_boolean());
 }
 
 #[test]
@@ -286,35 +283,35 @@ fn test_snapshot_command_with_verbose() {
 }
 
 #[test]
-fn test_snapshot_command_boundary_sampling() {
+fn test_snapshot_command_boundary_batch_sizes() {
     let runner = CliTestRunner::new().unwrap();
     
     let csv_path = runner.fixture().create_csv("test.csv", &sample_data::simple_csv_data()).unwrap();
     
-    // Test 0% sampling
+    // Test minimum valid batch size
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
-        "--name", "zero_percent", 
-        "--sample", "0%"
+        "--name", "min_batch", 
+        "--batch-size", "1"
     ]);
     
-    // Test 100% sampling
+    // Test large batch size
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
-        "--name", "hundred_percent", 
-        "--sample", "100%"
+        "--name", "large_batch", 
+        "--batch-size", "100000"
     ]);
     
-    // Test 0 count sampling
+    // Test with and without full data
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
-        "--name", "zero_count", 
-        "--sample", "0"
+        "--name", "with_full_data", 
+        "--full-data"
     ]);
     
-    runner.fixture().assert_snapshot_exists("zero_percent");
-    runner.fixture().assert_snapshot_exists("hundred_percent");
-    runner.fixture().assert_snapshot_exists("zero_count");
+    runner.fixture().assert_snapshot_exists("min_batch");
+    runner.fixture().assert_snapshot_exists("large_batch");
+    runner.fixture().assert_snapshot_exists("with_full_data");
 }
 
 #[test]

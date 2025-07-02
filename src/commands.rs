@@ -1,6 +1,6 @@
 //! Command implementations for tabdiff CLI
 
-use crate::cli::{Commands, DiffMode, OutputFormat, SamplingStrategy};
+use crate::cli::{Commands, DiffMode, OutputFormat};
 use crate::data::DataProcessor;
 use crate::error::Result;
 use crate::output::{OutputManager, PrettyPrinter, JsonFormatter};
@@ -17,10 +17,9 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
         Commands::Snapshot {
             input,
             name,
-            sample,
             batch_size,
             full_data,
-        } => snapshot_command(workspace_path, &input, &name, &sample, batch_size, full_data),
+        } => snapshot_command(workspace_path, &input, &name, batch_size, full_data),
         Commands::Diff {
             snapshot1,
             snapshot2,
@@ -35,10 +34,9 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
         Commands::Status {
             input,
             compare_to,
-            sample,
             quiet,
             json,
-        } => status_command(workspace_path, &input, compare_to.as_deref(), &sample, quiet, json),
+        } => status_command(workspace_path, &input, compare_to.as_deref(), quiet, json),
         Commands::List { format } => list_command(workspace_path, &format),
         Commands::Rollback {
             input,
@@ -269,7 +267,6 @@ fn snapshot_command(
     workspace_path: Option<&Path>,
     input: &str,
     name: &str,
-    sample: &str,
     batch_size: usize,
     full_data: bool,
 ) -> Result<()> {
@@ -283,10 +280,6 @@ fn snapshot_command(
             name
         )));
     }
-
-    // Parse sampling strategy
-    let sampling = SamplingStrategy::parse(sample)
-        .map_err(|e| crate::error::TabdiffError::invalid_sampling(e))?;
 
     // Create snapshot
     let input_path = if Path::new(input).is_absolute() {
@@ -304,7 +297,6 @@ fn snapshot_command(
     let metadata = creator.create_snapshot_with_workspace(
         &input_path,
         name,
-        &sampling,
         &archive_path,
         &json_path,
         full_data,
@@ -475,16 +467,11 @@ fn status_command(
     workspace_path: Option<&Path>,
     input: &str,
     compare_to: Option<&str>,
-    sample: &str,
     quiet: bool,
     json: bool,
 ) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
     let resolver = SnapshotResolver::new(workspace.clone());
-
-    // Parse sampling strategy
-    let _sampling = SamplingStrategy::parse(sample)
-        .map_err(|e| crate::error::TabdiffError::invalid_sampling(e))?;
 
     // Resolve comparison snapshot
     let comparison_snapshot = if let Some(name) = compare_to {

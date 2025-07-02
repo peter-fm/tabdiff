@@ -1,6 +1,5 @@
 //! Hashing utilities for tabdiff operations
 
-use crate::cli::SamplingStrategy;
 use crate::error::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
@@ -126,41 +125,18 @@ impl HashComputer {
         Ok(column_hashes)
     }
 
-    /// Compute row hashes with sampling strategy (legacy method for compatibility)
-    pub fn hash_rows(
-        &self,
-        row_data: &[Vec<String>],
-        sampling: &SamplingStrategy,
-    ) -> Result<Vec<RowHash>> {
+    /// Compute row hashes from data
+    pub fn hash_rows(&self, row_data: &[Vec<String>]) -> Result<Vec<RowHash>> {
         let total_rows = row_data.len();
         
         if total_rows == 0 {
             return Ok(Vec::new());
         }
-        
-        let indices_to_hash = match sampling {
-            SamplingStrategy::Full => (0..total_rows).collect(),
-            SamplingStrategy::Count(n) => {
-                if *n >= total_rows {
-                    (0..total_rows).collect()
-                } else {
-                    self.sample_indices(total_rows, *n)
-                }
-            }
-            SamplingStrategy::Percentage(pct) => {
-                let count = ((total_rows as f64) * pct).ceil() as usize;
-                if count >= total_rows {
-                    (0..total_rows).collect()
-                } else {
-                    self.sample_indices(total_rows, count)
-                }
-            }
-        };
 
-        // Compute hashes in parallel
-        let row_hashes: Vec<RowHash> = indices_to_hash
-            .par_iter()
-            .map(|&idx| {
+        // Compute hashes in parallel for all rows
+        let row_hashes: Vec<RowHash> = (0..total_rows)
+            .into_par_iter()
+            .map(|idx| {
                 let row = &row_data[idx];
                 let hash = self.hash_values(row);
                 RowHash {
@@ -177,10 +153,9 @@ impl HashComputer {
     pub fn hash_rows_with_processor(
         &self,
         data_processor: &crate::data::DataProcessor,
-        sampling: &SamplingStrategy,
     ) -> Result<Vec<RowHash>> {
         // Use the optimized DuckDB-native hash computation
-        data_processor.compute_row_hashes_sql(sampling)
+        data_processor.compute_row_hashes_sql()
     }
 
     /// Compute column hashes using DuckDB-native operations (high performance)
@@ -192,27 +167,6 @@ impl HashComputer {
         data_processor.compute_column_hashes_sql()
     }
 
-    /// Sample random indices
-    fn sample_indices(&self, total: usize, count: usize) -> Vec<usize> {
-        use std::collections::HashSet;
-        
-        if count >= total {
-            return (0..total).collect();
-        }
-        
-        let mut indices = HashSet::new();
-        let mut rng_state = 12345u64; // Simple PRNG for reproducible sampling
-        
-        while indices.len() < count {
-            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-            let idx = (rng_state % total as u64) as usize;
-            indices.insert(idx);
-        }
-        
-        let mut result: Vec<usize> = indices.into_iter().collect();
-        result.sort();
-        result
-    }
 
     /// Infer column type from values
     fn infer_column_type(&self, values: &[String]) -> String {
@@ -385,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sampling_strategy() {
+    fn test_hash_rows() {
         let computer = HashComputer::new(1000);
         let row_data = vec![
             vec!["1".to_string(), "a".to_string()],
@@ -394,17 +348,13 @@ mod tests {
             vec!["4".to_string(), "d".to_string()],
         ];
         
-        // Test full sampling
-        let full_hashes = computer.hash_rows(&row_data, &SamplingStrategy::Full).unwrap();
-        assert_eq!(full_hashes.len(), 4);
+        let hashes = computer.hash_rows(&row_data).unwrap();
+        assert_eq!(hashes.len(), 4);
         
-        // Test count sampling
-        let count_hashes = computer.hash_rows(&row_data, &SamplingStrategy::Count(2)).unwrap();
-        assert_eq!(count_hashes.len(), 2);
-        
-        // Test percentage sampling
-        let pct_hashes = computer.hash_rows(&row_data, &SamplingStrategy::Percentage(0.5)).unwrap();
-        assert_eq!(pct_hashes.len(), 2);
+        // Check that each row has the correct index
+        for (i, row_hash) in hashes.iter().enumerate() {
+            assert_eq!(row_hash.row_index, i as u64);
+        }
     }
 
     #[test]
@@ -428,8 +378,8 @@ mod tests {
             vec!["E".to_string(), "5".to_string()],  // Row 3 (same content as baseline row 4)
         ];
         
-        let baseline_hashes = computer.hash_rows(&baseline_data, &SamplingStrategy::Full).unwrap();
-        let current_hashes = computer.hash_rows(&current_data, &SamplingStrategy::Full).unwrap();
+        let baseline_hashes = computer.hash_rows(&baseline_data).unwrap();
+        let current_hashes = computer.hash_rows(&current_data).unwrap();
         
         let comparison = computer.compare_row_hashes(&baseline_hashes, &current_hashes);
         

@@ -1,6 +1,6 @@
 //! Unit tests for CLI argument parsing and validation
 
-use tabdiff::cli::{Cli, Commands, SamplingStrategy, DiffMode, OutputFormat};
+use tabdiff::cli::{Cli, Commands, DiffMode, OutputFormat};
 use clap::Parser;
 
 #[test]
@@ -29,10 +29,9 @@ fn test_cli_init_command_with_force() {
 fn test_cli_snapshot_command() {
     let cli = Cli::try_parse_from(&["tabdiff", "snapshot", "data.csv", "--name", "test"]).unwrap();
     match cli.command {
-        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
+        Commands::Snapshot { input, name, batch_size, full_data } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
-            assert_eq!(sample, "full");
             assert_eq!(batch_size, 10000);
             assert!(!full_data);
         }
@@ -45,17 +44,16 @@ fn test_cli_snapshot_command_with_options() {
     let cli = Cli::try_parse_from(&[
         "tabdiff", "snapshot", "data.csv", 
         "--name", "test", 
-        "--sample", "10%", 
-        "--batch-size", "5000"
+        "--batch-size", "5000",
+        "--full-data"
     ]).unwrap();
     
     match cli.command {
-        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
+        Commands::Snapshot { input, name, batch_size, full_data } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
-            assert_eq!(sample, "10%");
             assert_eq!(batch_size, 5000);
-            assert!(!full_data);
+            assert!(full_data);
         }
         _ => panic!("Expected Snapshot command"),
     }
@@ -129,10 +127,9 @@ fn test_cli_show_command_with_options() {
 fn test_cli_status_command() {
     let cli = Cli::try_parse_from(&["tabdiff", "status", "data.csv"]).unwrap();
     match cli.command {
-        Commands::Status { input, compare_to, sample, quiet, json } => {
+        Commands::Status { input, compare_to, quiet, json } => {
             assert_eq!(input, "data.csv");
-            assert!(compare_to.is_none());
-            assert_eq!(sample, "1000");
+            assert_eq!(compare_to, None);
             assert!(!quiet);
             assert!(!json);
         }
@@ -145,16 +142,14 @@ fn test_cli_status_command_with_options() {
     let cli = Cli::try_parse_from(&[
         "tabdiff", "status", "data.csv", 
         "--compare-to", "baseline", 
-        "--sample", "5%", 
         "--quiet", 
         "--json"
     ]).unwrap();
     
     match cli.command {
-        Commands::Status { input, compare_to, sample, quiet, json } => {
+        Commands::Status { input, compare_to, quiet, json } => {
             assert_eq!(input, "data.csv");
-            assert_eq!(compare_to.unwrap(), "baseline");
-            assert_eq!(sample, "5%");
+            assert_eq!(compare_to, Some("baseline".to_string()));
             assert!(quiet);
             assert!(json);
         }
@@ -194,71 +189,6 @@ fn test_cli_global_options() {
     assert!(cli.verbose);
 }
 
-#[test]
-fn test_sampling_strategy_parse_full() {
-    let strategy = SamplingStrategy::parse("full").unwrap();
-    assert!(matches!(strategy, SamplingStrategy::Full));
-}
-
-#[test]
-fn test_sampling_strategy_parse_percentage() {
-    let strategy = SamplingStrategy::parse("10%").unwrap();
-    match strategy {
-        SamplingStrategy::Percentage(p) => {
-            assert!((p - 0.1).abs() < f64::EPSILON);
-        }
-        _ => panic!("Expected Percentage strategy"),
-    }
-}
-
-#[test]
-fn test_sampling_strategy_parse_count() {
-    let strategy = SamplingStrategy::parse("1000").unwrap();
-    match strategy {
-        SamplingStrategy::Count(c) => {
-            assert_eq!(c, 1000);
-        }
-        _ => panic!("Expected Count strategy"),
-    }
-}
-
-#[test]
-fn test_sampling_strategy_parse_invalid() {
-    assert!(SamplingStrategy::parse("invalid").is_err());
-    assert!(SamplingStrategy::parse("150%").is_err());
-    assert!(SamplingStrategy::parse("-10%").is_err());
-    assert!(SamplingStrategy::parse("").is_err());
-}
-
-#[test]
-fn test_sampling_strategy_parse_edge_cases() {
-    // Test 0%
-    let strategy = SamplingStrategy::parse("0%").unwrap();
-    match strategy {
-        SamplingStrategy::Percentage(p) => {
-            assert!((p - 0.0).abs() < f64::EPSILON);
-        }
-        _ => panic!("Expected Percentage strategy"),
-    }
-    
-    // Test 100%
-    let strategy = SamplingStrategy::parse("100%").unwrap();
-    match strategy {
-        SamplingStrategy::Percentage(p) => {
-            assert!((p - 1.0).abs() < f64::EPSILON);
-        }
-        _ => panic!("Expected Percentage strategy"),
-    }
-    
-    // Test 0 count
-    let strategy = SamplingStrategy::parse("0").unwrap();
-    match strategy {
-        SamplingStrategy::Count(c) => {
-            assert_eq!(c, 0);
-        }
-        _ => panic!("Expected Count strategy"),
-    }
-}
 
 #[test]
 fn test_diff_mode_parse() {
@@ -342,46 +272,6 @@ fn test_cli_version() {
     assert!(result.is_err()); // Version exits with error code
 }
 
-#[test]
-fn test_sampling_strategy_boundary_values() {
-    // Test very small percentage
-    let strategy = SamplingStrategy::parse("0.1%").unwrap();
-    match strategy {
-        SamplingStrategy::Percentage(p) => {
-            assert!((p - 0.001).abs() < f64::EPSILON);
-        }
-        _ => panic!("Expected Percentage strategy"),
-    }
-    
-    // Test very large count
-    let strategy = SamplingStrategy::parse("999999999").unwrap();
-    match strategy {
-        SamplingStrategy::Count(c) => {
-            assert_eq!(c, 999999999);
-        }
-        _ => panic!("Expected Count strategy"),
-    }
-}
-
-#[test]
-fn test_sampling_strategy_invalid_values() {
-    // Test invalid percentage values
-    assert!(SamplingStrategy::parse("101%").is_err());
-    assert!(SamplingStrategy::parse("-5%").is_err());
-    assert!(SamplingStrategy::parse("abc%").is_err());
-    assert!(SamplingStrategy::parse("%").is_err());
-    assert!(SamplingStrategy::parse("50%%").is_err());
-    
-    // Test invalid count values
-    assert!(SamplingStrategy::parse("-100").is_err());
-    assert!(SamplingStrategy::parse("abc").is_err());
-    assert!(SamplingStrategy::parse("123abc").is_err());
-    
-    // Test edge cases
-    assert!(SamplingStrategy::parse("").is_err());
-    assert!(SamplingStrategy::parse(" ").is_err());
-    assert!(SamplingStrategy::parse("full%").is_err());
-}
 
 #[test]
 fn test_invalid_snapshot_names() {
@@ -503,10 +393,9 @@ fn test_cli_snapshot_with_full_data() {
     ]).unwrap();
     
     match cli.command {
-        Commands::Snapshot { input, name, sample, batch_size, full_data } => {
+        Commands::Snapshot { input, name, batch_size, full_data } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
-            assert_eq!(sample, "full");
             assert_eq!(batch_size, 10000);
             assert!(full_data);
         }

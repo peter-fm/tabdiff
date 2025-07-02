@@ -1,7 +1,6 @@
 //! Snapshot creation and management
 
 use crate::archive::ArchiveManager;
-use crate::cli::SamplingStrategy;
 use crate::data::{DataInfo, DataProcessor};
 use crate::error::{Result, TabdiffError};
 use crate::hash::{ColumnHash, HashComputer, RowHash, SchemaHash};
@@ -24,7 +23,6 @@ pub struct SnapshotMetadata {
     pub column_count: usize,
     pub schema_hash: String,
     pub columns: HashMap<String, String>,
-    pub sampling: SamplingInfo,
     pub archive_size: Option<u64>,
     pub has_full_data: bool,
     // Enhanced snapshot chain fields (with defaults for backward compatibility)
@@ -46,13 +44,6 @@ pub struct DeltaInfo {
     pub compressed_size: u64,
 }
 
-/// Sampling information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamplingInfo {
-    pub strategy: String,
-    pub rows_hashed: u64,
-    pub total_rows: u64,
-}
 
 /// Snapshot creator
 pub struct SnapshotCreator {
@@ -80,12 +71,11 @@ impl SnapshotCreator {
         &mut self,
         input_path: &Path,
         name: &str,
-        sampling: &SamplingStrategy,
         archive_path: &Path,
         json_path: &Path,
         full_data: bool,
     ) -> Result<SnapshotMetadata> {
-        self.create_snapshot_with_workspace(input_path, name, sampling, archive_path, json_path, full_data, None)
+        self.create_snapshot_with_workspace(input_path, name, archive_path, json_path, full_data, None)
     }
 
     /// Create a snapshot with workspace context for chain management
@@ -93,7 +83,6 @@ impl SnapshotCreator {
         &mut self,
         input_path: &Path,
         name: &str,
-        sampling: &SamplingStrategy,
         archive_path: &Path,
         json_path: &Path,
         full_data: bool,
@@ -132,7 +121,7 @@ impl SnapshotCreator {
 
         // Use optimized DuckDB-native hash computation
         self.progress.finish_schema("Computing row hashes (optimized)...");
-        let row_hashes = self.hash_computer.hash_rows_with_processor(&data_processor, sampling)?;
+        let row_hashes = self.hash_computer.hash_rows_with_processor(&data_processor)?;
         self.progress.finish_rows(&format!("Hashed {} rows", row_hashes.len()));
 
         // Compute column hashes using DuckDB
@@ -148,7 +137,6 @@ impl SnapshotCreator {
             &row_hashes,
             &column_hashes,
             name,
-            sampling,
             full_data,
             &delta_from_parent,
         )?;
@@ -173,11 +161,6 @@ impl SnapshotCreator {
                 .iter()
                 .map(|ch| (ch.column_name.clone(), ch.hash.clone()))
                 .collect(),
-            sampling: SamplingInfo {
-                strategy: format!("{:?}", sampling),
-                rows_hashed: row_hashes.len() as u64,
-                total_rows: data_info.row_count,
-            },
             archive_size: Some(archive_size),
             has_full_data: true,
             parent_snapshot,
@@ -213,7 +196,6 @@ impl SnapshotCreator {
         row_hashes: &[RowHash],
         column_hashes: &[ColumnHash],
         name: &str,
-        sampling: &SamplingStrategy,
         full_data: bool,
     ) -> Result<Vec<(String, Vec<u8>)>> {
         let mut files = Vec::new();
@@ -226,11 +208,8 @@ impl SnapshotCreator {
             "row_count": data_info.row_count,
             "column_count": data_info.column_count(),
             "schema_hash": schema_hash.hash,
-            "sampling": {
-                "strategy": format!("{:?}", sampling),
-                "rows_hashed": row_hashes.len(),
-                "total_rows": data_info.row_count
-            }
+            "rows_hashed": row_hashes.len(),
+            "total_rows": data_info.row_count
         });
         files.push((
             "metadata.json".to_string(),
@@ -256,8 +235,7 @@ impl SnapshotCreator {
         
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
-            "rows": actual_row_data,
-            "sampling": format!("{:?}", sampling)
+            "rows": actual_row_data
         });
         files.push((
             "rows.json".to_string(),
@@ -306,7 +284,6 @@ impl SnapshotCreator {
         row_hashes: &[RowHash],
         column_hashes: &[ColumnHash],
         name: &str,
-        sampling: &SamplingStrategy,
         _full_data: bool,
         delta_from_parent: &Option<DeltaInfo>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
@@ -320,11 +297,8 @@ impl SnapshotCreator {
             "row_count": data_info.row_count,
             "column_count": data_info.column_count(),
             "schema_hash": schema_hash.hash,
-            "sampling": {
-                "strategy": format!("{:?}", sampling),
-                "rows_hashed": row_hashes.len(),
-                "total_rows": data_info.row_count
-            }
+            "rows_hashed": row_hashes.len(),
+            "total_rows": data_info.row_count
         });
         files.push((
             "metadata.json".to_string(),
@@ -342,23 +316,22 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&schema_data)?.into_bytes(),
         ));
 
-        // Create rows.json with sampled data only (PERFORMANCE FIX)
+        // Create rows.json with full data for reliable change detection
         let data_processor = DataProcessor::new()?;
         data_processor.load_file(&data_info.source)?;
-        let sampled_row_data = data_processor.extract_sampled_data(sampling)?;
+        let full_row_data = data_processor.extract_all_data()?;
         
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
-            "rows": sampled_row_data,
-            "sampling": format!("{:?}", sampling)
+            "rows": full_row_data
         });
         files.push((
             "rows.json".to_string(),
             serde_json::to_string_pretty(&rows_data)?.into_bytes(),
         ));
 
-        // Create data.parquet with sampled dataset only (PERFORMANCE FIX)
-        let data_parquet = self.create_data_parquet(&sampled_row_data, &data_info.columns)?;
+        // Create data.parquet with full dataset for reliable rollback
+        let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
         files.push((
             "data.parquet".to_string(),
             data_parquet,
@@ -861,11 +834,6 @@ mod tests {
             column_count: 3,
             schema_hash: "def456".to_string(),
             columns: HashMap::new(),
-            sampling: SamplingInfo {
-                strategy: "Full".to_string(),
-                rows_hashed: 100,
-                total_rows: 100,
-            },
             archive_size: Some(1024),
             has_full_data: true,
             parent_snapshot: None,
@@ -897,11 +865,6 @@ mod tests {
             column_count: 3,
             schema_hash: "def456".to_string(),
             columns: HashMap::new(),
-            sampling: SamplingInfo {
-                strategy: "Full".to_string(),
-                rows_hashed: 100,
-                total_rows: 100,
-            },
             archive_size: Some(1024),
             has_full_data: true,
             parent_snapshot: None,

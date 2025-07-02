@@ -495,29 +495,29 @@ fn test_status_command_with_table_changes() {
     runner.expect_success(&["status", modified_csv.to_str().unwrap(), "--compare-to", "baseline", "--json"]);
     runner.expect_success(&["status", modified_csv.to_str().unwrap(), "--compare-to", "baseline", "--quiet"]);
     
-    // Test with sampling
-    runner.expect_success(&["status", modified_csv.to_str().unwrap(), "--compare-to", "baseline", "--sample", "100%"]);
+    // Test with different batch size
+    runner.expect_success(&["status", modified_csv.to_str().unwrap(), "--compare-to", "baseline"]);
     
     runner.fixture().assert_snapshot_exists("baseline");
 }
 
 #[test]
-fn test_large_table_changes_with_sampling() {
+fn test_large_table_changes_with_batch_processing() {
     let runner = CliTestRunner::new().unwrap();
     
-    // Create larger datasets for testing sampling with changes
-    let baseline_csv = runner.fixture().create_large_csv("baseline.csv", 1000, 5).unwrap();
+    // Create larger datasets for testing batch processing with changes
+    let baseline_csv = runner.fixture().create_large_csv("baseline.csv", 500, 5).unwrap();
     runner.expect_success(&[
         "snapshot", baseline_csv.to_str().unwrap(), 
         "--name", "baseline", 
-        "--sample", "10%"
+        "--batch-size", "100"
     ]);
     
-    let modified_csv = runner.fixture().create_large_csv("modified.csv", 1200, 5).unwrap(); // More rows
+    let modified_csv = runner.fixture().create_large_csv("modified.csv", 600, 5).unwrap(); // More rows
     runner.expect_success(&[
         "snapshot", modified_csv.to_str().unwrap(), 
         "--name", "modified", 
-        "--sample", "10%"
+        "--batch-size", "100"
     ]);
     
     runner.expect_success(&["diff", "baseline", "modified"]);

@@ -8,7 +8,6 @@
 - **Multiple file format support**: CSV, Parquet, JSON, TSV
 - **Git-friendly workflow** with lightweight JSON summaries
 - **Compressed archives** for full snapshot data (DVC-compatible)
-- **Flexible sampling strategies** for large datasets
 - **Schema, column, and row-level diffing**
 - **Progress reporting** for long-running operations
 - **🆕 Comprehensive change detection** with before/after values
@@ -124,10 +123,6 @@ tabdiff snapshot <input> --name <snapshot_name> [options]
 ```
 
 **Options:**
-- `--sample <strategy>`: Sampling strategy
-  - `full`: Hash all rows (default)
-  - `N%`: Random percentage (e.g., `10%`)
-  - `N`: Exact count (e.g., `1000`)
 - `--batch-size <size>`: Processing batch size (default: 10000)
 - `--full-data`: Store complete row data for comprehensive change detection
 
@@ -138,9 +133,6 @@ tabdiff snapshot data.csv --name v1 --full-data
 
 # Hash-only snapshot (smaller, basic change detection)
 tabdiff snapshot data.csv --name v1
-
-# Sample 10% of rows with full data
-tabdiff snapshot large_data.parquet --name v1 --sample 10% --full-data
 ```
 
 ### `tabdiff diff`
@@ -186,7 +178,6 @@ tabdiff status <input> [options]
 
 **Options:**
 - `--compare-to <snapshot>`: Specific snapshot (defaults to latest)
-- `--sample <strategy>`: Sampling strategy
 - `--quiet`: Machine-readable output
 - `--json`: JSON output with detailed before/after values
 
@@ -561,14 +552,14 @@ fi
 ### Large Dataset Handling
 
 ```bash
-# For large datasets, use sampling for quick checks
-tabdiff snapshot large_data.parquet --name v1 --sample 1% --full-data
+# For large datasets, tabdiff processes all data for reliable results
+tabdiff snapshot large_data.parquet --name v1 --full-data
 
-# Quick status check with sampling
-tabdiff status large_data.parquet --sample 1000
+# Status check processes all data for accurate comparison
+tabdiff status large_data.parquet
 
-# Full comparison when needed
-tabdiff status large_data.parquet --sample full
+# Use batch processing for performance optimization
+tabdiff snapshot large_data.parquet --name v1 --batch-size 50000 --full-data
 ```
 
 ### Enhanced Snapshot Caching Workflow 🆕

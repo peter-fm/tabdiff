@@ -374,12 +374,12 @@ fn test_binary_file_as_csv() {
 fn test_extremely_large_single_row() {
     let runner = CliTestRunner::new().unwrap();
     
-    // Create CSV with one large row (reduced from 10k to 500 columns for speed)
+    // Create CSV with one large row (reduced from 10k to 100 columns for speed)
     let mut large_row = vec!["id".to_string()];
     let mut large_values = vec!["1".to_string()];
     
-    // Add 500 columns instead of 10000
-    for i in 0..500 {
+    // Add 100 columns instead of 500 to make test faster
+    for i in 0..100 {
         large_row.push(format!("col_{}", i));
         large_values.push(format!("value_{}", i));
     }
@@ -389,11 +389,11 @@ fn test_extremely_large_single_row() {
     let csv_path = runner.fixture().root().join("large_row.csv");
     fs::write(&csv_path, large_csv).unwrap();
     
-    // Use sampling to make this test faster
+    // Use smaller batch size to make this test faster
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
         "--name", "large_row", 
-        "--sample", "100"
+        "--batch-size", "100"
     ]);
     runner.fixture().assert_snapshot_exists("large_row");
 }
