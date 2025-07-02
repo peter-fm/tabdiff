@@ -379,7 +379,7 @@ impl DataProcessor {
         self.compute_row_hashes_with_progress(None)
     }
 
-    /// Compute row hashes with progress reporting and chunked processing
+    /// Compute row hashes with streaming row-by-row processing (revolutionary approach)
     pub fn compute_row_hashes_with_progress(
         &mut self,
         progress_callback: Option<&dyn Fn(u64, u64)>,
@@ -399,84 +399,106 @@ impl DataProcessor {
             return Ok(Vec::new());
         }
 
-        // Build column concatenation for hashing
-        let column_concat = columns.iter()
-            .map(|col| format!("COALESCE(CAST(\"{}\" AS VARCHAR), '')", col.name))
-            .collect::<Vec<_>>()
-            .join(", '|', ");
-
-        // Process in chunks for better progress reporting and memory management
+        // REVOLUTIONARY APPROACH: Simple streaming without complex SQL
+        // Use basic SELECT * and process row-by-row in Rust
+        eprintln!("Starting streaming processing of {} rows...", total_rows);
+        
         let mut all_hashes = Vec::new();
         let mut processed_rows = 0u64;
-
-        // Use adaptive chunk size based on total rows
-        let chunk_size = if total_rows > 1_000_000 {
-            50_000 // Large datasets: 50K rows per chunk
-        } else if total_rows > 100_000 {
-            25_000 // Medium datasets: 25K rows per chunk
-        } else {
-            self.chunk_size.min(total_rows as usize) // Small datasets: use configured chunk size
-        };
-
-        while processed_rows < total_rows {
-            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
-            
-            // Use DuckDB's hash function but return as hex string to avoid overflow
-            let hash_sql = format!(
-                "SELECT ROW_NUMBER() OVER () + {} as row_index,
-                        printf('%x', hash(concat({}))) as row_hash_hex
-                 FROM (SELECT * FROM data_view LIMIT {} OFFSET {})",
-                processed_rows,
-                column_concat,
-                current_chunk_size,
-                processed_rows
-            );
-
-            let mut stmt = self.connection.prepare(&hash_sql)
-                .map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to prepare hash query: {}", e)
-                ))?;
-
-            let rows = stmt.query_map([], |row| {
-                // Get row index safely
-                let row_idx = match row.get::<_, i64>(0) {
-                    Ok(idx) => idx.max(0) as u64, // Ensure non-negative
-                    Err(_) => processed_rows, // Fallback to current position
-                };
-                
-                // Get hash as hex string - this avoids overflow issues entirely
-                let hash_hex: String = match row.get::<_, String>(1) {
-                    Ok(hex_str) => self.safe_hash_conversion(&hex_str),
-                    Err(_) => {
-                        // Fallback: try to extract using robust method
-                        self.robust_hash_extraction(row, 1).unwrap_or_else(|_| "0000000000000000".to_string())
-                    }
-                };
-                
-                Ok(crate::hash::RowHash {
-                    row_index: row_idx,
-                    hash: hash_hex,
-                })
-            }).map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to compute row hashes: {}", e)
+        let start_time = std::time::Instant::now();
+        
+        // Simple SQL - just get all data without complex operations
+        let simple_sql = "SELECT * FROM data_view";
+        
+        let mut stmt = self.connection.prepare(simple_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare simple streaming query: {}", e)
             ))?;
 
-            let mut chunk_hashes = Vec::new();
-            for row in rows {
-                chunk_hashes.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to process hash row: {}", e)
-                ))?);
+        eprintln!("Query prepared, starting row iteration...");
+        
+        let rows = stmt.query_map([], |row| {
+            // Extract all column values for this row
+            let mut row_values = Vec::new();
+            for i in 0..columns.len() {
+                let value: String = match row.get_ref(i) {
+                    Ok(duckdb::types::ValueRef::Null) => String::new(),
+                    Ok(duckdb::types::ValueRef::Boolean(b)) => b.to_string(),
+                    Ok(duckdb::types::ValueRef::TinyInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::SmallInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::Int(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::BigInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::HugeInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::UTinyInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::USmallInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::UInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::UBigInt(i)) => i.to_string(),
+                    Ok(duckdb::types::ValueRef::Float(f)) => f.to_string(),
+                    Ok(duckdb::types::ValueRef::Double(f)) => f.to_string(),
+                    Ok(duckdb::types::ValueRef::Decimal(d)) => d.to_string(),
+                    Ok(duckdb::types::ValueRef::Text(s)) => String::from_utf8_lossy(s).to_string(),
+                    Ok(duckdb::types::ValueRef::Blob(b)) => format!("<blob:{} bytes>", b.len()),
+                    Ok(duckdb::types::ValueRef::Date32(d)) => format!("{:?}", d),
+                    Ok(duckdb::types::ValueRef::Time64(t, _)) => format!("{:?}", t),
+                    Ok(duckdb::types::ValueRef::Timestamp(ts, _)) => format!("{:?}", ts),
+                    _ => String::new(), // Handle any other types or errors
+                };
+                row_values.push(value);
             }
+            
+            Ok(row_values)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to create row iterator: {}", e)
+        ))?;
 
-            processed_rows += chunk_hashes.len() as u64;
-            all_hashes.extend(chunk_hashes);
-
-            // Report progress if callback provided
-            if let Some(callback) = progress_callback {
-                callback(processed_rows, total_rows);
+        eprintln!("Row iterator created, processing rows...");
+        
+        // Process each row individually with immediate progress updates
+        for (row_index, row_result) in rows.enumerate() {
+            let row_values = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process row {}: {}", row_index, e)
+            ))?;
+            
+            // Hash the row values using Blake3
+            let row_content = row_values.join("|");
+            let hash = blake3::hash(row_content.as_bytes());
+            let hash_hex = format!("{:016x}", 
+                hash.as_bytes()[0..8]
+                    .iter()
+                    .fold(0u64, |acc, &b| (acc << 8) | b as u64)
+            );
+            
+            all_hashes.push(crate::hash::RowHash {
+                row_index: row_index as u64,
+                hash: hash_hex,
+            });
+            
+            processed_rows += 1;
+            
+            // Real-time progress updates - every 1000 rows for large files, every 100 for smaller
+            let update_frequency = if total_rows > 1_000_000 { 1000 } else { 100 };
+            
+            if processed_rows % update_frequency == 0 || processed_rows == total_rows {
+                // Always print to stderr for immediate feedback
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let rate = processed_rows as f64 / elapsed;
+                let percent = (processed_rows as f64 / total_rows as f64) * 100.0;
+                
+                use std::io::Write;
+                eprint!("\rProcessed: {}/{} rows ({:.1}%) - {:.0} rows/sec", 
+                       processed_rows, total_rows, percent, rate);
+                let _ = std::io::stderr().flush();
+                
+                // Also call the progress callback if provided
+                if let Some(callback) = progress_callback {
+                    callback(processed_rows, total_rows);
+                }
             }
         }
-
+        
+        // Final newline after progress
+        eprintln!("\nStreaming processing completed!");
+        
         Ok(all_hashes)
     }
 

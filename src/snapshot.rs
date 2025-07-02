@@ -124,9 +124,13 @@ impl SnapshotCreator {
                 Some(&|processed: u64, total: u64| {
                     if let Some(pb) = &progress_ref.rows_pb {
                         pb.set_position(processed);
-                        if processed % 10000 == 0 || processed == total {
-                            pb.set_message(format!("Hashing rows ({}/{})", processed, total));
-                        }
+                        // Update message with current progress - no need for modulo check since
+                        // the data processor now handles frequent updates internally
+                        pb.set_message(format!("Hashing rows ({}/{})", processed, total));
+                        // Force immediate display update
+                        pb.tick();
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
                     }
                 })
             )?

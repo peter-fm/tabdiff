@@ -12,6 +12,7 @@ pub struct ProgressReporter {
     pub archive_pb: Option<ProgressBar>,
     estimated_rows: u64,
     show_progress: bool,
+    start_time: std::time::Instant,
 }
 
 impl ProgressReporter {
@@ -27,6 +28,7 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows,
             show_progress: true,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -43,6 +45,7 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows: 0,
             show_progress: true,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -55,6 +58,7 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows: 0,
             show_progress: false,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -102,6 +106,10 @@ impl ProgressReporter {
         self.ensure_rows_pb();
         if let Some(pb) = &self.rows_pb {
             pb.set_position(processed);
+            // Force immediate flush to terminal for real-time updates
+            pb.tick();
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
     }
 
@@ -181,7 +189,7 @@ fn create_progress_bar(total: u64, message: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({per_sec}) {eta} {msg}")
             .expect("Invalid progress template")
             .progress_chars("#>-"),
     );
