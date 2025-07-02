@@ -17,11 +17,19 @@ impl ArchiveManager {
         archive_path: P,
         files: &[(String, Vec<u8>)], // (filename, content)
     ) -> Result<()> {
+        Self::create_archive_with_progress(archive_path, files, None)
+    }
+
+    /// Create a compressed archive from multiple files with optional progress callback
+    pub fn create_archive_with_progress<P: AsRef<Path>>(
+        archive_path: P,
+        files: &[(String, Vec<u8>)], // (filename, content)
+        progress_callback: Option<&dyn Fn(u64, u64, &str)>, // (processed, total, message)
+    ) -> Result<()> {
         let archive_file = File::create(archive_path)?;
         
         // Calculate total size for progress
         let total_size: u64 = files.iter().map(|(_, content)| content.len() as u64).sum();
-        let progress = create_file_progress(total_size, "Creating archive");
         
         // Create zstd encoder
         let mut encoder = Encoder::new(archive_file, 3)?; // Compression level 3
@@ -41,7 +49,11 @@ impl ArchiveManager {
                 tar_builder.append_data(&mut header, filename, content.as_slice())?;
                 
                 processed += content.len() as u64;
-                progress.set_position(processed);
+                
+                // Report progress if callback provided
+                if let Some(callback) = progress_callback {
+                    callback(processed, total_size, "Creating archive");
+                }
             }
             
             tar_builder.finish()?;
@@ -49,7 +61,10 @@ impl ArchiveManager {
         
         encoder.finish()?;
         
-        progress.finish_with_message("Archive created");
+        // Final progress update
+        if let Some(callback) = progress_callback {
+            callback(total_size, total_size, "Archive created");
+        }
         
         Ok(())
     }

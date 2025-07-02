@@ -127,7 +127,7 @@ fn rollback_command(
         )));
     }
 
-    let data_processor = DataProcessor::new()?;
+    let mut data_processor = DataProcessor::new()?;
     let current_data_info = data_processor.load_file(&input_path)?;
     let current_row_data = data_processor.extract_all_data()?;
 
@@ -501,7 +501,7 @@ fn status_command(
         workspace.root.join(input)
     };
 
-    let data_processor = DataProcessor::new()?;
+    let mut data_processor = DataProcessor::new()?;
     let current_data_info = data_processor.load_file(&input_path)?;
     let current_row_data = data_processor.extract_all_data()?;
 

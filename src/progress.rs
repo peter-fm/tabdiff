@@ -10,21 +10,23 @@ pub struct ProgressReporter {
     pub rows_pb: Option<ProgressBar>,
     pub columns_pb: Option<ProgressBar>,
     pub archive_pb: Option<ProgressBar>,
+    estimated_rows: u64,
+    show_progress: bool,
 }
 
 impl ProgressReporter {
     /// Create progress reporter for snapshot creation
     pub fn new_for_snapshot(estimated_rows: u64) -> Self {
+        // Only create the first progress bar (schema analysis)
         let schema_pb = create_spinner("Analyzing schema...");
-        let rows_pb = create_progress_bar(estimated_rows, "Hashing rows");
-        let columns_pb = create_spinner("Computing column hashes...");
-        let archive_pb = create_spinner("Creating archive...");
 
         Self {
             schema_pb: Some(schema_pb),
-            rows_pb: Some(rows_pb),
-            columns_pb: Some(columns_pb),
-            archive_pb: Some(archive_pb),
+            rows_pb: None,
+            columns_pb: None,
+            archive_pb: None,
+            estimated_rows,
+            show_progress: true,
         }
     }
 
@@ -39,6 +41,8 @@ impl ProgressReporter {
             rows_pb: Some(rows_pb),
             columns_pb: Some(columns_pb),
             archive_pb: None,
+            estimated_rows: 0,
+            show_progress: true,
         }
     }
 
@@ -49,18 +53,53 @@ impl ProgressReporter {
             rows_pb: None,
             columns_pb: None,
             archive_pb: None,
+            estimated_rows: 0,
+            show_progress: false,
         }
     }
 
-    /// Finish schema analysis
+    /// Update estimated rows (useful when actual count is known after loading)
+    pub fn update_estimated_rows(&mut self, new_count: u64) {
+        self.estimated_rows = new_count;
+        // If rows progress bar already exists, update its length
+        if let Some(pb) = &self.rows_pb {
+            pb.set_length(new_count);
+        }
+    }
+
+    /// Lazily create rows progress bar when needed
+    fn ensure_rows_pb(&mut self) {
+        if self.show_progress && self.rows_pb.is_none() {
+            self.rows_pb = Some(create_progress_bar(self.estimated_rows, "Hashing rows"));
+        }
+    }
+
+    /// Lazily create columns progress bar when needed
+    fn ensure_columns_pb(&mut self) {
+        if self.show_progress && self.columns_pb.is_none() {
+            self.columns_pb = Some(create_spinner("Computing column hashes..."));
+        }
+    }
+
+    /// Lazily create archive progress bar when needed
+    fn ensure_archive_pb(&mut self) {
+        if self.show_progress && self.archive_pb.is_none() {
+            self.archive_pb = Some(create_spinner("Creating archive..."));
+        }
+    }
+
+    /// Finish schema analysis and prepare for row processing
     pub fn finish_schema(&mut self, message: &str) {
         if let Some(pb) = self.schema_pb.take() {
             pb.finish_with_message(message.to_string());
         }
+        // Immediately create the rows progress bar for large datasets
+        self.ensure_rows_pb();
     }
 
     /// Update row progress
-    pub fn update_rows(&self, processed: u64) {
+    pub fn update_rows(&mut self, processed: u64) {
+        self.ensure_rows_pb();
         if let Some(pb) = &self.rows_pb {
             pb.set_position(processed);
         }
@@ -75,8 +114,17 @@ impl ProgressReporter {
 
     /// Finish column processing
     pub fn finish_columns(&mut self, message: &str) {
+        self.ensure_columns_pb();
         if let Some(pb) = self.columns_pb.take() {
             pb.finish_with_message(message.to_string());
+        }
+    }
+
+    /// Update archive progress message without finishing
+    pub fn update_archive(&mut self, message: &str) {
+        self.ensure_archive_pb();
+        if let Some(pb) = &self.archive_pb {
+            pb.set_message(message.to_string());
         }
     }
 
@@ -98,8 +146,19 @@ impl ProgressReporter {
 
 impl Drop for ProgressReporter {
     fn drop(&mut self) {
-        // Ensure all progress bars are cleaned up
-        self.finish_all("Completed");
+        // Ensure all progress bars are cleaned up silently
+        if let Some(pb) = self.schema_pb.take() {
+            pb.finish_and_clear();
+        }
+        if let Some(pb) = self.rows_pb.take() {
+            pb.finish_and_clear();
+        }
+        if let Some(pb) = self.columns_pb.take() {
+            pb.finish_and_clear();
+        }
+        if let Some(pb) = self.archive_pb.take() {
+            pb.finish_and_clear();
+        }
     }
 }
 
@@ -151,9 +210,10 @@ mod tests {
     fn test_progress_reporter_creation() {
         let reporter = ProgressReporter::new_for_snapshot(1000);
         assert!(reporter.schema_pb.is_some());
-        assert!(reporter.rows_pb.is_some());
-        assert!(reporter.columns_pb.is_some());
-        assert!(reporter.archive_pb.is_some());
+        // These are now created lazily, so they start as None
+        assert!(reporter.rows_pb.is_none());
+        assert!(reporter.columns_pb.is_none());
+        assert!(reporter.archive_pb.is_none());
     }
 
     #[test]

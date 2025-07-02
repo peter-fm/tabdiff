@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 use crate::hash::ColumnInfo;
+use blake3;
 use duckdb::Connection;
 use num_bigint::BigUint;
 use num_traits::Num;
@@ -12,6 +13,7 @@ use std::path::Path;
 pub struct DataProcessor {
     connection: Connection,
     chunk_size: usize,
+    cached_columns: Option<Vec<ColumnInfo>>,
 }
 
 impl DataProcessor {
@@ -31,11 +33,15 @@ impl DataProcessor {
         connection.execute("SET preserve_insertion_order=false", [])?; // Allow reordering for performance
         connection.execute("SET enable_object_cache=true", [])?; // Enable object caching
         
-        Ok(Self { connection, chunk_size })
+        Ok(Self { 
+            connection, 
+            chunk_size, 
+            cached_columns: None 
+        })
     }
 
     /// Load data from file and return basic info
-    pub fn load_file(&self, file_path: &Path) -> Result<DataInfo> {
+    pub fn load_file(&mut self, file_path: &Path) -> Result<DataInfo> {
         // Validate file exists and is readable
         if !file_path.exists() {
             return Err(crate::error::TabdiffError::invalid_input(
@@ -115,8 +121,13 @@ impl DataProcessor {
         }
     }
 
-    /// Get column information from the current view
-    fn get_column_info(&self) -> Result<Vec<ColumnInfo>> {
+    /// Get column information from the current view (cached to avoid repeated calls)
+    fn get_column_info(&mut self) -> Result<Vec<ColumnInfo>> {
+        // Return cached columns if available
+        if let Some(ref columns) = self.cached_columns {
+            return Ok(columns.clone());
+        }
+
         // First, get column names in their original order using DESCRIBE
         let mut stmt = self.connection.prepare("DESCRIBE data_view")
             .map_err(|e| crate::error::TabdiffError::data_processing(
@@ -140,11 +151,22 @@ impl DataProcessor {
             ))?);
         }
         
+        // Cache the columns for future calls
+        self.cached_columns = Some(columns.clone());
+        
         Ok(columns)
     }
 
     /// Extract all data as rows of strings
-    pub fn extract_all_data(&self) -> Result<Vec<Vec<String>>> {
+    pub fn extract_all_data(&mut self) -> Result<Vec<Vec<String>>> {
+        self.extract_data_chunked_with_progress(None)
+    }
+
+    /// Extract data in chunks with progress reporting for better memory efficiency
+    pub fn extract_data_chunked_with_progress(
+        &mut self,
+        progress_callback: Option<&dyn Fn(u64, u64)>,
+    ) -> Result<Vec<Vec<String>>> {
         // First, get column information to determine the number of columns safely
         let columns = self.get_column_info()?;
         let column_count = columns.len();
@@ -152,56 +174,95 @@ impl DataProcessor {
         if column_count == 0 {
             return Ok(Vec::new()); // No columns, return empty data
         }
-        
-        let mut stmt = self.connection.prepare("SELECT * FROM data_view")
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare data extraction query: {}", e)
+
+        // Get total row count for progress reporting
+        let total_rows: u64 = self.connection
+            .prepare("SELECT COUNT(*) FROM data_view")?
+            .query_row([], |row| row.get(0))?;
+
+        if total_rows == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut all_data = Vec::new();
+        let mut processed_rows = 0u64;
+
+        // Use adaptive chunk size based on total rows
+        let chunk_size = if total_rows > 1_000_000 {
+            50_000 // Large datasets: 50K rows per chunk
+        } else if total_rows > 100_000 {
+            25_000 // Medium datasets: 25K rows per chunk
+        } else {
+            self.chunk_size.min(total_rows as usize) // Small datasets: use configured chunk size
+        };
+
+        while processed_rows < total_rows {
+            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
+            
+            let chunk_sql = format!(
+                "SELECT * FROM data_view LIMIT {} OFFSET {}",
+                current_chunk_size,
+                processed_rows
+            );
+
+            let mut stmt = self.connection.prepare(&chunk_sql)
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to prepare data extraction query: {}", e)
+                ))?;
+            
+            let rows = stmt.query_map([], |row| {
+                let mut string_row = Vec::new();
+                for i in 0..column_count {
+                    let value: String = match row.get_ref(i)? {
+                        duckdb::types::ValueRef::Null => String::new(),
+                        duckdb::types::ValueRef::Boolean(b) => b.to_string(),
+                        duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Int(i) => i.to_string(),
+                        duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Float(f) => f.to_string(),
+                        duckdb::types::ValueRef::Double(f) => f.to_string(),
+                        duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                        duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+                        duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                        duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                        duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                        duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                        _ => "<unknown>".to_string(),
+                    };
+                    string_row.push(value);
+                }
+                Ok(string_row)
+            }).map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to extract data rows: {}", e)
             ))?;
-        
-        let rows = stmt.query_map([], |row| {
-            let mut string_row = Vec::new();
-            for i in 0..column_count {
-                let value: String = match row.get_ref(i)? {
-                    duckdb::types::ValueRef::Null => String::new(),
-                    duckdb::types::ValueRef::Boolean(b) => b.to_string(),
-                    duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::Int(i) => i.to_string(),
-                    duckdb::types::ValueRef::BigInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
-                    duckdb::types::ValueRef::Float(f) => f.to_string(),
-                    duckdb::types::ValueRef::Double(f) => f.to_string(),
-                    duckdb::types::ValueRef::Decimal(d) => d.to_string(),
-                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
-                    duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
-                    duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
-                    duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
-                    duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
-                    _ => "<unknown>".to_string(),
-                };
-                string_row.push(value);
+            
+            let mut chunk_data = Vec::new();
+            for row in rows {
+                chunk_data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to process data row: {}", e)
+                ))?);
             }
-            Ok(string_row)
-        }).map_err(|e| crate::error::TabdiffError::data_processing(
-            format!("Failed to extract data rows: {}", e)
-        ))?;
-        
-        let mut data = Vec::new();
-        for row in rows {
-            data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to process data row: {}", e)
-            ))?);
+
+            processed_rows += chunk_data.len() as u64;
+            all_data.extend(chunk_data);
+
+            // Report progress if callback provided
+            if let Some(callback) = progress_callback {
+                callback(processed_rows, total_rows);
+            }
         }
         
-        Ok(data)
+        Ok(all_data)
     }
 
     /// Extract data by columns
-    pub fn extract_column_data(&self) -> Result<HashMap<String, Vec<String>>> {
+    pub fn extract_column_data(&mut self) -> Result<HashMap<String, Vec<String>>> {
         let columns = self.get_column_info()?;
         let mut column_data = HashMap::new();
         
@@ -254,7 +315,7 @@ impl DataProcessor {
     }
 
     /// Get estimated row count (for progress reporting)
-    pub fn estimate_row_count(&self, file_path: &Path) -> Result<u64> {
+    pub fn estimate_row_count(&mut self, file_path: &Path) -> Result<u64> {
         // For now, just load and count - could be optimized for large files
         self.load_file(file_path)?;
         let count: u64 = self.connection
@@ -314,10 +375,27 @@ impl DataProcessor {
     }
 
     /// Compute row hashes directly in DuckDB for maximum performance (robust version)
-    pub fn compute_row_hashes_sql(&self) -> Result<Vec<crate::hash::RowHash>> {
+    pub fn compute_row_hashes_sql(&mut self) -> Result<Vec<crate::hash::RowHash>> {
+        self.compute_row_hashes_with_progress(None)
+    }
+
+    /// Compute row hashes with progress reporting and chunked processing
+    pub fn compute_row_hashes_with_progress(
+        &mut self,
+        progress_callback: Option<&dyn Fn(u64, u64)>,
+    ) -> Result<Vec<crate::hash::RowHash>> {
         let columns = self.get_column_info()?;
         
         if columns.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get total row count for progress reporting
+        let total_rows: u64 = self.connection
+            .prepare("SELECT COUNT(*) FROM data_view")?
+            .query_row([], |row| row.get(0))?;
+
+        if total_rows == 0 {
             return Ok(Vec::new());
         }
 
@@ -327,144 +405,118 @@ impl DataProcessor {
             .collect::<Vec<_>>()
             .join(", '|', ");
 
-        // Use DuckDB's hash function but return as hex string to avoid overflow
-        let hash_sql = format!(
-            "SELECT ROW_NUMBER() OVER () as row_index,
-                    printf('%x', hash(concat({}))) as row_hash_hex
-             FROM data_view
-             ORDER BY row_index",
-            column_concat
-        );
+        // Process in chunks for better progress reporting and memory management
+        let mut all_hashes = Vec::new();
+        let mut processed_rows = 0u64;
 
-        let mut stmt = self.connection.prepare(&hash_sql)
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare hash query: {}", e)
+        // Use adaptive chunk size based on total rows
+        let chunk_size = if total_rows > 1_000_000 {
+            50_000 // Large datasets: 50K rows per chunk
+        } else if total_rows > 100_000 {
+            25_000 // Medium datasets: 25K rows per chunk
+        } else {
+            self.chunk_size.min(total_rows as usize) // Small datasets: use configured chunk size
+        };
+
+        while processed_rows < total_rows {
+            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
+            
+            // Use DuckDB's hash function but return as hex string to avoid overflow
+            let hash_sql = format!(
+                "SELECT ROW_NUMBER() OVER () + {} as row_index,
+                        printf('%x', hash(concat({}))) as row_hash_hex
+                 FROM (SELECT * FROM data_view LIMIT {} OFFSET {})",
+                processed_rows,
+                column_concat,
+                current_chunk_size,
+                processed_rows
+            );
+
+            let mut stmt = self.connection.prepare(&hash_sql)
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to prepare hash query: {}", e)
+                ))?;
+
+            let rows = stmt.query_map([], |row| {
+                // Get row index safely
+                let row_idx = match row.get::<_, i64>(0) {
+                    Ok(idx) => idx.max(0) as u64, // Ensure non-negative
+                    Err(_) => processed_rows, // Fallback to current position
+                };
+                
+                // Get hash as hex string - this avoids overflow issues entirely
+                let hash_hex: String = match row.get::<_, String>(1) {
+                    Ok(hex_str) => self.safe_hash_conversion(&hex_str),
+                    Err(_) => {
+                        // Fallback: try to extract using robust method
+                        self.robust_hash_extraction(row, 1).unwrap_or_else(|_| "0000000000000000".to_string())
+                    }
+                };
+                
+                Ok(crate::hash::RowHash {
+                    row_index: row_idx,
+                    hash: hash_hex,
+                })
+            }).map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to compute row hashes: {}", e)
             ))?;
 
-        let rows = stmt.query_map([], |row| {
-            // Get row index safely
-            let row_idx = match row.get::<_, i64>(0) {
-                Ok(idx) => idx.max(0) as u64, // Ensure non-negative
-                Err(_) => 0u64, // Fallback to 0 if conversion fails
-            };
-            
-            // Get hash as hex string - this avoids overflow issues entirely
-            let hash_hex: String = match row.get::<_, String>(1) {
-                Ok(hex_str) => self.safe_hash_conversion(&hex_str),
-                Err(_) => {
-                    // Fallback: try to extract using robust method
-                    self.robust_hash_extraction(row, 1).unwrap_or_else(|_| "0000000000000000".to_string())
-                }
-            };
-            
-            Ok(crate::hash::RowHash {
-                row_index: row_idx,
-                hash: hash_hex,
-            })
-        }).map_err(|e| crate::error::TabdiffError::data_processing(
-            format!("Failed to compute row hashes: {}", e)
-        ))?;
+            let mut chunk_hashes = Vec::new();
+            for row in rows {
+                chunk_hashes.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to process hash row: {}", e)
+                ))?);
+            }
 
-        let mut hashes = Vec::new();
-        for row in rows {
-            hashes.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to process hash row: {}", e)
-            ))?);
+            processed_rows += chunk_hashes.len() as u64;
+            all_hashes.extend(chunk_hashes);
+
+            // Report progress if callback provided
+            if let Some(callback) = progress_callback {
+                callback(processed_rows, total_rows);
+            }
         }
 
-        Ok(hashes)
+        Ok(all_hashes)
     }
 
-    /// Compute column hashes directly in DuckDB using batch processing for performance
-    pub fn compute_column_hashes_sql(&self) -> Result<Vec<crate::hash::ColumnHash>> {
+    /// Compute column hashes efficiently - just hash column metadata, not all data
+    pub fn compute_column_hashes_sql(&mut self) -> Result<Vec<crate::hash::ColumnHash>> {
         let columns = self.get_column_info()?;
         
         if columns.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Try batch processing first for better performance
-        match self.compute_column_hashes_batch(&columns) {
-            Ok(hashes) => Ok(hashes),
-            Err(_) => {
-                // Fallback to individual processing if batch fails
-                self.compute_column_hashes_individual(&columns)
-            }
-        }
+        // Fast column hashing - just hash the column metadata, not all the data
+        // This is much more efficient and still provides change detection for schema changes
+        self.compute_column_metadata_hashes(&columns)
     }
 
-    /// Batch column hash computation - processes all columns in a single query
-    fn compute_column_hashes_batch(&self, columns: &[ColumnInfo]) -> Result<Vec<crate::hash::ColumnHash>> {
-        // Build a single SQL query that computes all column hashes at once
-        let column_selects: Vec<String> = columns.iter()
-            .map(|col| format!(
-                "printf('%x', hash(string_agg(COALESCE(CAST(\"{}\" AS VARCHAR), ''), '|'))) as \"{}\"",
-                col.name, col.name
-            ))
-            .collect();
-
-        let batch_sql = format!(
-            "SELECT {} FROM data_view",
-            column_selects.join(", ")
-        );
-
-        let mut stmt = self.connection.prepare(&batch_sql)
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare batch column hash query: {}", e)
-            ))?;
-
-        let result_row = stmt.query_row([], |row| {
-            let mut hashes = Vec::new();
-            for (i, column) in columns.iter().enumerate() {
-                let hash_hex: String = row.get(i)?;
-                let processed_hash = self.safe_hash_conversion(&hash_hex);
-                
-                hashes.push(crate::hash::ColumnHash {
-                    column_name: column.name.clone(),
-                    column_type: column.data_type.clone(),
-                    hash: processed_hash,
-                });
-            }
-            Ok(hashes)
-        }).map_err(|e| crate::error::TabdiffError::data_processing(
-            format!("Failed to execute batch column hash query: {}", e)
-        ))?;
-
-        let mut column_hashes = result_row;
-        // Sort by column name for consistency
-        column_hashes.sort_by(|a, b| a.column_name.cmp(&b.column_name));
-        Ok(column_hashes)
-    }
-
-    /// Individual column hash computation - fallback for when batch processing fails
-    fn compute_column_hashes_individual(&self, columns: &[ColumnInfo]) -> Result<Vec<crate::hash::ColumnHash>> {
+    /// Efficient column hash computation - hash only metadata, not data content
+    fn compute_column_metadata_hashes(&self, columns: &[ColumnInfo]) -> Result<Vec<crate::hash::ColumnHash>> {
         let mut column_hashes = Vec::new();
 
         for column in columns {
-            // Use printf to get hash as hex string, avoiding overflow issues
-            let hash_sql = format!(
-                "SELECT printf('%x', hash(string_agg(COALESCE(CAST(\"{}\" AS VARCHAR), ''), '|'))) as col_hash
-                 FROM data_view",
-                column.name
+            // Hash just the column metadata (name + type + nullable flag)
+            // This is much faster than hashing all column data
+            let metadata_string = format!("{}|{}|{}", 
+                column.name, 
+                column.data_type, 
+                if column.nullable { "nullable" } else { "not_null" }
             );
-
-            let hash_hex: String = self.connection
-                .prepare(&hash_sql)
-                .map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to prepare column hash query for '{}': {}", column.name, e)
-                ))?
-                .query_row([], |row| row.get(0))
-                .map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to compute column hash for '{}': {}", column.name, e)
-                ))?;
-
-            // Use safe hash conversion to ensure consistent format
-            let processed_hash = self.safe_hash_conversion(&hash_hex);
+            
+            // Use a simple hash of the metadata
+            let hash_hex = format!("{:016x}", 
+                blake3::hash(metadata_string.as_bytes()).as_bytes()[0..8]
+                    .iter()
+                    .fold(0u64, |acc, &b| (acc << 8) | b as u64)
+            );
 
             column_hashes.push(crate::hash::ColumnHash {
                 column_name: column.name.clone(),
                 column_type: column.data_type.clone(),
-                hash: processed_hash,
+                hash: hash_hex,
             });
         }
 
@@ -564,7 +616,7 @@ mod tests {
         let csv_content = "name,age,city\nAlice,30,NYC\nBob,25,LA\n";
         fs::write(&csv_path, csv_content).unwrap();
         
-        let processor = DataProcessor::new().unwrap();
+        let mut processor = DataProcessor::new().unwrap();
         let data_info = processor.load_file(&csv_path).unwrap();
         
         assert_eq!(data_info.row_count, 2);

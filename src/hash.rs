@@ -152,16 +152,26 @@ impl HashComputer {
     /// Compute row hashes using DuckDB-native operations (high performance)
     pub fn hash_rows_with_processor(
         &self,
-        data_processor: &crate::data::DataProcessor,
+        data_processor: &mut crate::data::DataProcessor,
     ) -> Result<Vec<RowHash>> {
         // Use the optimized DuckDB-native hash computation
         data_processor.compute_row_hashes_sql()
     }
 
+    /// Compute row hashes with progress reporting
+    pub fn hash_rows_with_processor_and_progress(
+        &self,
+        data_processor: &mut crate::data::DataProcessor,
+        progress_callback: Option<&dyn Fn(u64, u64)>,
+    ) -> Result<Vec<RowHash>> {
+        // Use the optimized DuckDB-native hash computation with progress
+        data_processor.compute_row_hashes_with_progress(progress_callback)
+    }
+
     /// Compute column hashes using DuckDB-native operations (high performance)
     pub fn hash_columns_with_processor(
         &self,
-        data_processor: &crate::data::DataProcessor,
+        data_processor: &mut crate::data::DataProcessor,
     ) -> Result<Vec<ColumnHash>> {
         // Use the optimized DuckDB-native column hash computation
         data_processor.compute_column_hashes_sql()

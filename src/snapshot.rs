@@ -89,7 +89,7 @@ impl SnapshotCreator {
         workspace: Option<&crate::workspace::TabdiffWorkspace>,
     ) -> Result<SnapshotMetadata> {
         // Load data
-        let data_processor = DataProcessor::new()?;
+        let mut data_processor = DataProcessor::new()?;
         
         // Only check format for files, not directories (which can contain supported files)
         if input_path.is_file() && !DataProcessor::is_supported_format(input_path) {
@@ -99,39 +99,47 @@ impl SnapshotCreator {
             )));
         }
 
-        self.progress.finish_schema("Loading data...");
+        // Phase 1: Load and analyze data
+        self.progress.finish_schema("📊 Loading and analyzing data...");
         let data_info = data_processor.load_file(input_path)?;
         
         // Update progress with actual row count
-        if let Some(pb) = &self.progress.rows_pb {
-            pb.set_length(data_info.row_count);
-        }
+        self.progress.update_estimated_rows(data_info.row_count);
 
         // Find parent snapshot and compute delta if workspace is provided
         let (parent_snapshot, sequence_number, delta_from_parent) = if let Some(ws) = workspace {
-            self.progress.finish_schema("Finding parent snapshot...");
-            self.find_parent_and_compute_delta(ws, &data_info, &data_processor)?
+            self.find_parent_and_compute_delta(ws, &data_info, &mut data_processor)?
         } else {
             (None, 0, None)
         };
 
-        // Compute schema hash
-        self.progress.finish_schema("Computing schema hash...");
+        // Phase 2: Compute schema hash
         let schema_hash = self.hash_computer.hash_schema(&data_info.columns)?;
 
-        // Use optimized DuckDB-native hash computation
-        self.progress.finish_schema("Computing row hashes (optimized)...");
-        let row_hashes = self.hash_computer.hash_rows_with_processor(&data_processor)?;
-        self.progress.finish_rows(&format!("Hashed {} rows", row_hashes.len()));
+        // Phase 3: Compute row hashes with progress reporting
+        let row_hashes = {
+            let progress_ref = &self.progress;
+            self.hash_computer.hash_rows_with_processor_and_progress(
+                &mut data_processor,
+                Some(&|processed: u64, total: u64| {
+                    if let Some(pb) = &progress_ref.rows_pb {
+                        pb.set_position(processed);
+                        if processed % 10000 == 0 || processed == total {
+                            pb.set_message(format!("Hashing rows ({}/{})", processed, total));
+                        }
+                    }
+                })
+            )?
+        };
+        self.progress.finish_rows(&format!("✅ Hashed {} rows", row_hashes.len()));
 
-        // Compute column hashes using DuckDB
-        self.progress.finish_columns("Computing column hashes (optimized)...");
-        let column_hashes = self.hash_computer.hash_columns_with_processor(&data_processor)?;
-        self.progress.finish_columns(&format!("Hashed {} columns", column_hashes.len()));
+        // Phase 4: Compute column hashes
+        let column_hashes = self.hash_computer.hash_columns_with_processor(&mut data_processor)?;
+        self.progress.finish_columns(&format!("✅ Hashed {} columns", column_hashes.len()));
 
-        // Create archive files (including delta if available)
-        self.progress.finish_archive("Creating archive...");
-        let archive_files = self.create_archive_files_with_delta(
+        // Phase 5: Create archive files (reuse existing data_processor to avoid reloading)
+        self.progress.update_archive("📦 Creating archive...");
+        let archive_files = self.create_archive_files_optimized(
             &data_info,
             &schema_hash,
             &row_hashes,
@@ -139,10 +147,24 @@ impl SnapshotCreator {
             name,
             full_data,
             &delta_from_parent,
+            &mut data_processor, // Pass existing processor to avoid reloading
         )?;
 
-        // Create compressed archive
-        ArchiveManager::create_archive(archive_path, &archive_files)?;
+        // Create compressed archive with integrated progress
+        {
+            let progress_ref = &self.progress;
+            ArchiveManager::create_archive_with_progress(
+                archive_path, 
+                &archive_files,
+                Some(&|processed: u64, total: u64, message: &str| {
+                    if let Some(pb) = &progress_ref.archive_pb {
+                        pb.set_length(total);
+                        pb.set_position(processed);
+                        pb.set_message(message.to_string());
+                    }
+                })
+            )?;
+        }
         
         // Get archive size
         let archive_size = std::fs::metadata(archive_path)?.len();
@@ -183,7 +205,7 @@ impl SnapshotCreator {
             }
         }
 
-        self.progress.finish_archive("Snapshot created successfully");
+        self.progress.finish_archive("🎉 Snapshot created successfully");
 
         Ok(metadata)
     }
@@ -228,14 +250,10 @@ impl SnapshotCreator {
         ));
 
         // Create rows.json (simplified for now - would use Parquet in full implementation)
-        // We need to extract the actual row data for comprehensive change detection
-        let data_processor = DataProcessor::new()?;
-        data_processor.load_file(&data_info.source)?;
-        let actual_row_data = data_processor.extract_all_data()?;
-        
+        // Note: This method is unused - the optimized version is used instead
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
-            "rows": actual_row_data
+            "rows": [] // Empty for unused method
         });
         files.push((
             "rows.json".to_string(),
@@ -317,9 +335,94 @@ impl SnapshotCreator {
         ));
 
         // Create rows.json with full data for reliable change detection
-        let data_processor = DataProcessor::new()?;
-        data_processor.load_file(&data_info.source)?;
-        let full_row_data = data_processor.extract_all_data()?;
+        // Note: This method is unused - the optimized version is used instead
+        let full_row_data: Vec<Vec<String>> = Vec::new(); // Empty for unused method
+        
+        let rows_data = serde_json::json!({
+            "row_hashes": row_hashes,
+            "rows": full_row_data
+        });
+        files.push((
+            "rows.json".to_string(),
+            serde_json::to_string_pretty(&rows_data)?.into_bytes(),
+        ));
+
+        // Create data.parquet with full dataset for reliable rollback
+        let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
+        files.push((
+            "data.parquet".to_string(),
+            data_parquet,
+        ));
+
+        // Create delta.parquet if we have delta information
+        if let Some(delta_info) = delta_from_parent {
+            let delta_parquet = self.create_delta_parquet(delta_info)?;
+            files.push((
+                "delta.parquet".to_string(),
+                delta_parquet,
+            ));
+        }
+
+        Ok(files)
+    }
+
+    /// Create archive files with delta support (optimized version that reuses data processor)
+    fn create_archive_files_optimized(
+        &mut self,
+        data_info: &DataInfo,
+        schema_hash: &SchemaHash,
+        row_hashes: &[RowHash],
+        column_hashes: &[ColumnHash],
+        name: &str,
+        _full_data: bool,
+        delta_from_parent: &Option<DeltaInfo>,
+        data_processor: &mut DataProcessor, // Reuse existing processor to avoid reloading
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut files = Vec::new();
+
+        // Create metadata.json
+        let metadata = serde_json::json!({
+            "name": name,
+            "created": Utc::now(),
+            "source": data_info.source.to_string_lossy(),
+            "row_count": data_info.row_count,
+            "column_count": data_info.column_count(),
+            "schema_hash": schema_hash.hash,
+            "rows_hashed": row_hashes.len(),
+            "total_rows": data_info.row_count
+        });
+        files.push((
+            "metadata.json".to_string(),
+            serde_json::to_string_pretty(&metadata)?.into_bytes(),
+        ));
+
+        // Create schema.json
+        let schema_data = serde_json::json!({
+            "hash": schema_hash.hash,
+            "columns": schema_hash.columns,
+            "column_hashes": column_hashes
+        });
+        files.push((
+            "schema.json".to_string(),
+            serde_json::to_string_pretty(&schema_data)?.into_bytes(),
+        ));
+
+        // Create rows.json with full data for reliable change detection
+        // Use chunked extraction with progress reporting
+        let full_row_data = {
+            let progress_ref = &self.progress;
+            data_processor.extract_data_chunked_with_progress(
+                Some(&|processed: u64, total: u64| {
+                    if let Some(pb) = &progress_ref.archive_pb {
+                        pb.set_length(total);
+                        pb.set_position(processed);
+                        if processed % 10000 == 0 || processed == total {
+                            pb.set_message(format!("Extracting data ({}/{})", processed, total));
+                        }
+                    }
+                })
+            )?
+        };
         
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes,
@@ -354,7 +457,7 @@ impl SnapshotCreator {
         &self,
         workspace: &crate::workspace::TabdiffWorkspace,
         current_data_info: &DataInfo,
-        current_data_processor: &DataProcessor,
+        current_data_processor: &mut DataProcessor,
     ) -> Result<(Option<String>, u64, Option<DeltaInfo>)> {
         // Build snapshot chain to find the latest snapshot
         let chain = SnapshotChain::build_chain(workspace)?;
