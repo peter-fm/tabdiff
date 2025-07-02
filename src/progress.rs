@@ -71,11 +71,10 @@ impl ProgressReporter {
         }
     }
 
-    /// Lazily create rows progress bar when needed
+    /// Lazily create rows progress bar when needed (disabled for cleaner output)
     fn ensure_rows_pb(&mut self) {
-        if self.show_progress && self.rows_pb.is_none() {
-            self.rows_pb = Some(create_progress_bar(self.estimated_rows, "Hashing rows"));
-        }
+        // Disabled: progress bar conflicts with text-based progress reporting
+        // Text-based progress in data.rs provides cleaner output
     }
 
     /// Lazily create columns progress bar when needed
@@ -101,23 +100,15 @@ impl ProgressReporter {
         self.ensure_rows_pb();
     }
 
-    /// Update row progress
+    /// Update row progress (disabled - using text-based progress instead)
     pub fn update_rows(&mut self, processed: u64) {
-        self.ensure_rows_pb();
-        if let Some(pb) = &self.rows_pb {
-            pb.set_position(processed);
-            // Force immediate flush to terminal for real-time updates
-            pb.tick();
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-        }
+        // Disabled: using text-based progress reporting in data.rs for cleaner output
     }
 
     /// Finish row processing
     pub fn finish_rows(&mut self, message: &str) {
-        if let Some(pb) = self.rows_pb.take() {
-            pb.finish_with_message(message.to_string());
-        }
+        // Simply print the completion message since we're not using progress bars for rows
+        println!("  {}", message);
     }
 
     /// Finish column processing

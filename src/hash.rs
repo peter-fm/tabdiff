@@ -247,7 +247,7 @@ impl HashComputer {
         };
         
         // Print diagnostics for debugging
-        hash_quality.print_diagnostics();
+        // hash_quality.print_diagnostics();
         
         // Create maps from content hash to row indices for tracking which rows changed
         let mut base_content_to_indices: HashMap<&str, Vec<u64>> = HashMap::new();

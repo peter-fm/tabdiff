@@ -399,8 +399,6 @@ impl DataProcessor {
             return Ok(Vec::new());
         }
 
-        eprintln!("Starting deterministic processing of {} rows...", total_rows);
-        
         let mut all_hashes = Vec::new();
         let mut processed_rows = 0u64;
         let start_time = std::time::Instant::now();
@@ -422,8 +420,6 @@ impl DataProcessor {
                 format!("Failed to prepare deterministic query: {}", e)
             ))?;
 
-        eprintln!("Deterministic query prepared, starting row iteration...");
-        
         let rows = stmt.query_map([], |row| {
             // Extract all column values for this row
             let mut row_values = Vec::new();
@@ -464,8 +460,6 @@ impl DataProcessor {
             format!("Failed to create row iterator: {}", e)
         ))?;
 
-        eprintln!("Row iterator created, processing rows...");
-        
         // Process each row individually with immediate progress updates
         for (row_index, row_result) in rows.enumerate() {
             let row_values = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
@@ -487,8 +481,8 @@ impl DataProcessor {
             
             processed_rows += 1;
             
-            // Real-time progress updates - every 1000 rows for large files, every 100 for smaller
-            let update_frequency = if total_rows > 1_000_000 { 1000 } else { 100 };
+            // Real-time progress updates - every 10000 rows for large files, every 1000 for smaller
+            let update_frequency = if total_rows > 1_000_000 { 10000 } else { 1000 };
             
             if processed_rows % update_frequency == 0 || processed_rows == total_rows {
                 // Always print to stderr for immediate feedback
@@ -509,7 +503,7 @@ impl DataProcessor {
         }
         
         // Final newline after progress
-        eprintln!("\nDeterministic processing completed!");
+        eprintln!();
         
         Ok(all_hashes)
     }

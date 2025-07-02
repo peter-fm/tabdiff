@@ -115,24 +115,10 @@ impl SnapshotCreator {
         let schema_hash = self.hash_computer.hash_schema(&data_info.columns)?;
 
         // Phase 3: Compute row hashes with progress reporting
-        let row_hashes = {
-            let progress_ref = &self.progress;
-            self.hash_computer.hash_rows_with_processor_and_progress(
-                &mut data_processor,
-                Some(&|processed: u64, total: u64| {
-                    if let Some(pb) = &progress_ref.rows_pb {
-                        pb.set_position(processed);
-                        // Update message with current progress - no need for modulo check since
-                        // the data processor now handles frequent updates internally
-                        pb.set_message(format!("Hashing rows ({}/{})", processed, total));
-                        // Force immediate display update
-                        pb.tick();
-                        use std::io::Write;
-                        let _ = std::io::stdout().flush();
-                    }
-                })
-            )?
-        };
+        let row_hashes = self.hash_computer.hash_rows_with_processor_and_progress(
+            &mut data_processor,
+            None // No callback needed - data.rs handles progress display directly
+        )?;
         self.progress.finish_rows(&format!("✅ Hashed {} rows", row_hashes.len()));
 
         // Find parent snapshot and compute delta if workspace is provided (using computed hashes)
