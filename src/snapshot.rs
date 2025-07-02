@@ -34,6 +34,11 @@ pub struct SnapshotMetadata {
     pub delta_from_parent: Option<DeltaInfo>,
     #[serde(default)]
     pub can_reconstruct_parent: bool,
+    // Source-aware fields for proper chain isolation
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub source_fingerprint: Option<String>,
 }
 
 /// Information about delta changes from parent snapshot
@@ -173,6 +178,20 @@ impl SnapshotCreator {
         // Get archive size
         let archive_size = std::fs::metadata(archive_path)?.len();
 
+        // Create canonical source path and fingerprint for source tracking
+        let canonical_source_path = input_path.canonicalize()
+            .unwrap_or_else(|_| input_path.to_path_buf())
+            .to_string_lossy()
+            .to_string();
+        
+        let source_fingerprint = format!("{}:{}", 
+            canonical_source_path,
+            self.hash_computer.hash_value(&format!("{}:{}", 
+                canonical_source_path, 
+                data_info.row_count
+            ))
+        );
+
         // Create metadata
         let mut metadata = SnapshotMetadata {
             format_version: crate::FORMAT_VERSION.to_string(),
@@ -193,6 +212,8 @@ impl SnapshotCreator {
             sequence_number,
             delta_from_parent,
             can_reconstruct_parent: false,
+            source_path: Some(canonical_source_path),
+            source_fingerprint: Some(source_fingerprint),
         };
 
         // Set can_reconstruct_parent flag if this snapshot has a delta
@@ -456,15 +477,21 @@ impl SnapshotCreator {
         Ok(files)
     }
 
-    /// Find parent snapshot and compute delta
+    /// Find parent snapshot and compute delta (source-aware)
     fn find_parent_and_compute_delta(
         &self,
         workspace: &crate::workspace::TabdiffWorkspace,
         current_data_info: &DataInfo,
         current_data_processor: &mut DataProcessor,
     ) -> Result<(Option<String>, u64, Option<DeltaInfo>)> {
-        // Build snapshot chain to find the latest snapshot
-        let chain = SnapshotChain::build_chain(workspace)?;
+        // Create canonical source path for current file
+        let current_canonical_path = current_data_info.source.canonicalize()
+            .unwrap_or_else(|_| current_data_info.source.clone())
+            .to_string_lossy()
+            .to_string();
+
+        // Build source-aware snapshot chain for the current file only
+        let chain = SnapshotChain::build_chain_for_source(workspace, &current_canonical_path)?;
         
         if let Some(head_name) = &chain.head {
             // Load parent snapshot data
@@ -472,6 +499,26 @@ impl SnapshotCreator {
             
             if parent_json_path.exists() {
                 let parent_metadata = SnapshotLoader::load_metadata(&parent_json_path)?;
+                
+                // Double-check that parent is from the same source
+                if let Some(parent_source_path) = &parent_metadata.source_path {
+                    if parent_source_path != &current_canonical_path {
+                        // Parent is from different source, treat as first snapshot
+                        return Ok((None, 0, None));
+                    }
+                } else {
+                    // Legacy snapshot without source_path, check original source field
+                    let parent_canonical_path = std::path::Path::new(&parent_metadata.source)
+                        .canonicalize()
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&parent_metadata.source))
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    if parent_canonical_path != current_canonical_path {
+                        // Parent is from different source, treat as first snapshot
+                        return Ok((None, 0, None));
+                    }
+                }
                 
                 // Check if parent has archive data for comparison
                 if parent_archive_path.exists() {
@@ -513,7 +560,7 @@ impl SnapshotCreator {
             }
         }
         
-        // No parent found - this is the first snapshot
+        // No parent found - this is the first snapshot for this source
         Ok((None, 0, None))
     }
 
@@ -682,6 +729,49 @@ impl SnapshotChain {
         });
         
         // Find head (latest snapshot)
+        let head = snapshots.last().map(|s| s.name.clone());
+        
+        Ok(Self { snapshots, head })
+    }
+
+    /// Build snapshot chain for a specific source file
+    pub fn build_chain_for_source(workspace: &crate::workspace::TabdiffWorkspace, source_path: &str) -> Result<Self> {
+        let snapshot_names = workspace.list_snapshots()?;
+        let mut snapshots = Vec::new();
+        
+        for name in snapshot_names {
+            let (_, json_path) = workspace.snapshot_paths(&name);
+            if json_path.exists() {
+                let metadata = SnapshotLoader::load_metadata(&json_path)?;
+                
+                // Check if this snapshot is from the same source
+                let is_same_source = if let Some(snapshot_source_path) = &metadata.source_path {
+                    // Use the stored canonical source path
+                    snapshot_source_path == source_path
+                } else {
+                    // Legacy snapshot without source_path, check original source field
+                    let snapshot_canonical_path = std::path::Path::new(&metadata.source)
+                        .canonicalize()
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&metadata.source))
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    snapshot_canonical_path == source_path
+                };
+                
+                if is_same_source {
+                    snapshots.push(metadata);
+                }
+            }
+        }
+        
+        // Sort by sequence number and creation time
+        snapshots.sort_by(|a, b| {
+            a.sequence_number.cmp(&b.sequence_number)
+                .then_with(|| a.created.cmp(&b.created))
+        });
+        
+        // Find head (latest snapshot for this source)
         let head = snapshots.last().map(|s| s.name.clone());
         
         Ok(Self { snapshots, head })
@@ -947,6 +1037,8 @@ mod tests {
             sequence_number: 0,
             delta_from_parent: None,
             can_reconstruct_parent: false,
+            source_path: Some("/path/to/test.csv".to_string()),
+            source_fingerprint: Some("test_fingerprint".to_string()),
         };
 
         let json = serde_json::to_string(&metadata).unwrap();
@@ -978,6 +1070,8 @@ mod tests {
             sequence_number: 0,
             delta_from_parent: None,
             can_reconstruct_parent: false,
+            source_path: Some("/path/to/test.csv".to_string()),
+            source_fingerprint: Some("test_fingerprint".to_string()),
         };
 
         let json_content = serde_json::to_string_pretty(&metadata).unwrap();

@@ -130,6 +130,74 @@ impl TabdiffWorkspace {
         snapshots.sort();
         Ok(snapshots)
     }
+
+    /// List snapshots for a specific source file
+    pub fn list_snapshots_for_source(&self, source_path: &str) -> Result<Vec<String>> {
+        let all_snapshots = self.list_snapshots()?;
+        let mut source_snapshots = Vec::new();
+        
+        for snapshot_name in all_snapshots {
+            let (_, json_path) = self.snapshot_paths(&snapshot_name);
+            if json_path.exists() {
+                // Load metadata to check source
+                let content = fs::read_to_string(&json_path)?;
+                let metadata: serde_json::Value = serde_json::from_str(&content)?;
+                
+                // Check if this snapshot is from the same source
+                let is_same_source = if let Some(snapshot_source_path) = metadata.get("source_path").and_then(|v| v.as_str()) {
+                    // Use the stored canonical source path
+                    snapshot_source_path == source_path
+                } else if let Some(snapshot_source) = metadata.get("source").and_then(|v| v.as_str()) {
+                    // Legacy snapshot without source_path, check original source field
+                    let snapshot_canonical_path = std::path::Path::new(snapshot_source)
+                        .canonicalize()
+                        .unwrap_or_else(|_| std::path::PathBuf::from(snapshot_source))
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    snapshot_canonical_path == source_path
+                } else {
+                    false
+                };
+                
+                if is_same_source {
+                    source_snapshots.push(snapshot_name);
+                }
+            }
+        }
+        
+        source_snapshots.sort();
+        Ok(source_snapshots)
+    }
+
+    /// Find the most recent snapshot for a specific source file
+    pub fn latest_snapshot_for_source(&self, source_path: &str) -> Result<Option<String>> {
+        let source_snapshots = self.list_snapshots_for_source(source_path)?;
+        
+        if source_snapshots.is_empty() {
+            return Ok(None);
+        }
+        
+        // Read creation times from JSON files and find latest
+        let mut latest_time = None;
+        let mut latest_name = None;
+        
+        for name in source_snapshots {
+            let (_, json_path) = self.snapshot_paths(&name);
+            if json_path.exists() {
+                if let Ok(metadata) = fs::metadata(&json_path) {
+                    if let Ok(created) = metadata.created() {
+                        if latest_time.is_none() || Some(created) > latest_time {
+                            latest_time = Some(created);
+                            latest_name = Some(name);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(latest_name)
+    }
     
     /// Find the most recent snapshot by creation time
     pub fn latest_snapshot(&self) -> Result<Option<String>> {
