@@ -106,8 +106,8 @@ fn test_list_snapshots_empty() {
     let workspace = TabdiffWorkspace::create_new(temp_dir.path().to_path_buf()).unwrap();
     
     let snapshots = workspace.list_snapshots().unwrap();
-    // Should only contain config, not actual snapshots
-    assert_eq!(snapshots, vec!["config"]);
+    // Should be empty when no user snapshots exist (config is not a snapshot)
+    assert_eq!(snapshots, Vec::<String>::new());
 }
 
 #[test]
@@ -125,9 +125,8 @@ fn test_list_snapshots_with_data() {
     let mut snapshots = workspace.list_snapshots().unwrap();
     snapshots.sort();
     
-    // Should include config plus our snapshots
-    let mut expected = vec!["config".to_string()];
-    expected.extend(names.iter().map(|s| s.to_string()));
+    // Should only include user snapshots, not config
+    let mut expected: Vec<String> = names.iter().map(|s| s.to_string()).collect();
     expected.sort();
     
     assert_eq!(snapshots, expected);
@@ -148,7 +147,8 @@ fn test_list_snapshots_ignores_non_json() {
     
     let mut snapshots = workspace.list_snapshots().unwrap();
     snapshots.sort();
-    assert_eq!(snapshots, vec!["config", "valid"]);
+    // Should only include user snapshots, not config or non-JSON files
+    assert_eq!(snapshots, vec!["valid"]);
 }
 
 #[test]
@@ -223,11 +223,11 @@ fn test_workspace_stats_empty() {
     let workspace = TabdiffWorkspace::create_new(temp_dir.path().to_path_buf()).unwrap();
     
     let stats = workspace.stats().unwrap();
-    // Config file counts as 1 snapshot in the stats
-    assert_eq!(stats.snapshot_count, 1);
+    // No user snapshots exist, only config file (which is not counted as a snapshot)
+    assert_eq!(stats.snapshot_count, 0);
     assert_eq!(stats.diff_count, 0);
     assert_eq!(stats.total_archive_size, 0);
-    assert!(stats.total_json_size > 0); // Config file has some size
+    assert_eq!(stats.total_json_size, 0); // Only user snapshots are counted
     assert_eq!(stats.total_diff_size, 0);
 }
 
@@ -247,8 +247,8 @@ fn test_workspace_stats_with_data() {
     fs::write(&diff_path, "diff_content").unwrap();
     
     let stats = workspace.stats().unwrap();
-    // Should count config + test snapshot = 2
-    assert_eq!(stats.snapshot_count, 2);
+    // Should count only user snapshots (test snapshot = 1, config is not counted)
+    assert_eq!(stats.snapshot_count, 1);
     assert_eq!(stats.diff_count, 1);
     assert!(stats.total_archive_size > 0);
     assert!(stats.total_json_size > 0);

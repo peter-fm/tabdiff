@@ -1,7 +1,5 @@
 /target
-
-# Ignore compressed snapshot archives
-.tabdiff/*.tabdiff
+/.tabdiff
 .DS_Store
 /demo
 /test_data

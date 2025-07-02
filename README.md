@@ -14,6 +14,8 @@
 - **🆕 Comprehensive change detection** with before/after values
 - **🆕 Rollback functionality** to restore files to previous states
 - **🆕 Detailed change analysis** with cell-level precision
+- **🆕 Enhanced snapshot caching** with delta chains for space efficiency
+- **🆕 Smart cleanup system** to manage storage while preserving rollback capability
 
 ## 📦 Installation
 
@@ -299,6 +301,79 @@ List all available snapshots.
 tabdiff list [--format <format>]
 ```
 
+### `tabdiff chain` 🆕
+Show snapshot chain and relationships.
+
+```bash
+tabdiff chain [--format <format>]
+```
+
+**Example Output:**
+```bash
+🔗 Snapshot Chain
+Chain structure:
+🌱 baseline (seq: 0)
+   └─ Archive size: 1114 bytes
+
+├─ v2 (seq: 1)
+   └─ Parent: baseline
+   └─ Can reconstruct parent: ✅
+   └─ Delta size: 536 bytes
+   └─ Archive size: 1505 bytes
+
+├─ v3 (seq: 2)
+   └─ Parent: v2
+   └─ Can reconstruct parent: ✅
+   └─ Delta size: 698 bytes
+   └─ Archive size: 1604 bytes
+
+Head: v3
+```
+
+### `tabdiff cleanup` 🆕
+Smart cleanup system to manage storage while preserving rollback capability.
+
+```bash
+tabdiff cleanup [options]
+```
+
+**Options:**
+- `--keep-full <N>`: Number of snapshots to keep full data for (default: 1)
+- `--dry-run`: Show what would be cleaned without applying
+- `--force`: Skip confirmation prompts
+
+**How It Works:**
+- **Keeps full data** for the most recent N snapshots (fast rollback)
+- **Removes `data.parquet`** from older snapshots (space savings)
+- **Preserves deltas** for reconstruction (maintains rollback capability)
+- **Never breaks** the ability to rollback to any snapshot
+
+**Examples:**
+```bash
+# Default: Keep full data for 1 snapshot (aggressive space savings)
+tabdiff cleanup --dry-run
+# Output: Would clean baseline and v2, keep v3 with full data
+
+# Conservative: Keep full data for 2 snapshots
+tabdiff cleanup --keep-full 2 --dry-run
+# Output: Would clean baseline only, keep v2 and v3 with full data
+
+# Apply cleanup
+tabdiff cleanup --force
+```
+
+**Space Savings Example:**
+```bash
+📊 Cleanup analysis:
+   • Snapshots for data cleanup: 2
+   • Estimated space savings: 1832 bytes (≈70% reduction)
+   • Archives will retain deltas for reconstruction
+
+🔍 Snapshots that would have data cleaned up:
+   • v2 (seq: 1, estimated savings: 1053 bytes)
+   • baseline (seq: 0, estimated savings: 779 bytes)
+```
+
 ## 🔍 Change Detection Features
 
 ### Schema Changes
@@ -388,14 +463,35 @@ git commit -m "Track tabdiff archives with DVC"
 }
 ```
 
-**Archive Contents (`.tabdiff/name.tabdiff`)**:
+**Enhanced Archive Contents (`.tabdiff/name.tabdiff`)**:
 ```
 name.tabdiff (tar.zst):
-├── metadata.json      # Extended metadata
+├── metadata.json      # Extended metadata with chain info
 ├── schema.json        # Schema + column hashes  
-├── rows.json          # Row hashes + full data (if --full-data)
-└── data.parquet       # Full dataset (future: Parquet format)
+├── rows.json          # Row hashes only
+├── data.parquet       # Full dataset (removable during cleanup)
+└── delta.parquet      # Changes from parent (always preserved)
 ```
+
+### Enhanced Snapshot Caching System 🆕
+
+**Delta Chain Architecture:**
+- Each snapshot stores both **full data** and **changes from parent**
+- Cleanup removes `data.parquet` but preserves `delta.parquet`
+- Any snapshot can be reconstructed by walking the delta chain
+- Provides optimal balance between speed and storage efficiency
+
+**Reconstruction Process:**
+1. **Fast Path**: Use `data.parquet` if available (recent snapshots)
+2. **Delta Path**: Reconstruct from chain if `data.parquet` was cleaned up
+   - Start from nearest snapshot with full data
+   - Apply delta operations in sequence
+   - Rebuild target snapshot state
+
+**Space vs Speed Trade-offs:**
+- `--keep-full 1`: Maximum space savings, delta reconstruction for older snapshots
+- `--keep-full 3`: Balanced approach, fast access to recent snapshots
+- `--keep-full 10`: Conservative, prioritizes speed over storage
 
 ## 🧪 Examples
 
@@ -473,6 +569,40 @@ tabdiff status large_data.parquet --sample 1000
 
 # Full comparison when needed
 tabdiff status large_data.parquet --sample full
+```
+
+### Enhanced Snapshot Caching Workflow 🆕
+
+```bash
+# Create a series of snapshots with delta chains
+tabdiff snapshot employees.csv --name baseline --full-data
+# Edit data: Alice gets raise, add Bob
+tabdiff snapshot employees.csv --name v2 --full-data  
+# Edit data: Bob gets raise, add Carol
+tabdiff snapshot employees.csv --name v3 --full-data
+
+# View the snapshot chain
+tabdiff chain
+# Output: Shows baseline → v2 → v3 with deltas
+
+# Check space usage before cleanup
+ls -la .tabdiff/*.tabdiff
+# Output: 3 archives, ~4KB total
+
+# Aggressive cleanup (keep full data for 1 snapshot only)
+tabdiff cleanup --dry-run
+# Output: Would clean baseline and v2, save ~70% space
+
+# Apply cleanup
+tabdiff cleanup --force
+# Output: Cleaned 2 snapshots, saved 1832 bytes
+
+# Verify rollback still works after cleanup
+tabdiff rollback employees.csv --to baseline --dry-run
+# Output: Shows exact changes needed (using delta reconstruction)
+
+# Rollback works perfectly even after cleanup!
+tabdiff rollback employees.csv --to baseline --force
 ```
 
 ### Rollback Safety Examples

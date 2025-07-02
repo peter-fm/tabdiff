@@ -117,7 +117,10 @@ impl TabdiffWorkspace {
                 if extension == "json" {
                     if let Some(stem) = path.file_stem() {
                         if let Some(name) = stem.to_str() {
-                            snapshots.push(name.to_string());
+                            // Filter out config file - only include user snapshots
+                            if name != "config" {
+                                snapshots.push(name.to_string());
+                            }
                         }
                     }
                 }

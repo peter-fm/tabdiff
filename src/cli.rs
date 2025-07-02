@@ -132,6 +132,28 @@ pub enum Commands {
         #[arg(long, default_value = "true")]
         backup: bool,
     },
+    
+    /// Show snapshot chain and relationships
+    Chain {
+        /// Output format: "pretty", "json"
+        #[arg(long, default_value = "pretty")]
+        format: String,
+    },
+    
+    /// Clean up old snapshot archives to save space
+    Cleanup {
+        /// Number of full archives to keep (default: 1)
+        #[arg(long, default_value = "1")]
+        keep_full: usize,
+        
+        /// Show what would be cleaned without applying (dry run)
+        #[arg(long)]
+        dry_run: bool,
+        
+        /// Skip confirmation prompts
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Parse sampling strategy string into structured format
