@@ -12,7 +12,6 @@ pub struct ProgressReporter {
     pub archive_pb: Option<ProgressBar>,
     estimated_rows: u64,
     show_progress: bool,
-    start_time: std::time::Instant,
 }
 
 impl ProgressReporter {
@@ -28,7 +27,6 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows,
             show_progress: true,
-            start_time: std::time::Instant::now(),
         }
     }
 
@@ -45,7 +43,6 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows: 0,
             show_progress: true,
-            start_time: std::time::Instant::now(),
         }
     }
 
@@ -58,7 +55,6 @@ impl ProgressReporter {
             archive_pb: None,
             estimated_rows: 0,
             show_progress: false,
-            start_time: std::time::Instant::now(),
         }
     }
 
@@ -101,7 +97,7 @@ impl ProgressReporter {
     }
 
     /// Update row progress (disabled - using text-based progress instead)
-    pub fn update_rows(&mut self, processed: u64) {
+    pub fn update_rows(&mut self, _processed: u64) {
         // Disabled: using text-based progress reporting in data.rs for cleaner output
     }
 
@@ -175,18 +171,6 @@ fn create_spinner(message: &str) -> ProgressBar {
     pb
 }
 
-/// Create a progress bar with known total
-fn create_progress_bar(total: u64, message: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({per_sec}) {eta} {msg}")
-            .expect("Invalid progress template")
-            .progress_chars("#>-"),
-    );
-    pb.set_message(message.to_string());
-    pb
-}
 
 /// Create a simple progress bar for file operations
 pub fn create_file_progress(total: u64, message: &str) -> ProgressBar {
