@@ -497,7 +497,15 @@ fn status_command(
     println!("📊 Checking status of '{}' against snapshot '{}'...", input, comparison_snapshot.name);
 
     // Load baseline snapshot metadata and data
-    let _baseline_metadata = SnapshotLoader::load_metadata(&comparison_snapshot.json_path)?;
+    let baseline_metadata = SnapshotLoader::load_metadata(&comparison_snapshot.json_path)?;
+    
+    // Check if baseline snapshot has full data for rollback capability
+    if !baseline_metadata.has_full_data {
+        return Err(crate::error::TabdiffError::invalid_input(
+            "Cannot rollback from hash-only snapshot. Use --full-data when creating snapshots for rollback capability."
+        ));
+    }
+    
     let baseline_data = if comparison_snapshot.has_archive() {
         SnapshotLoader::load_full_snapshot(comparison_snapshot.require_archive()?)?
     } else {
@@ -691,27 +699,7 @@ fn cleanup_command(
 
     println!("🧹 Analyzing snapshots for cleanup...");
     
-    // Find snapshots that can have their full data removed (selective cleanup)
-    let candidates_for_cleanup = chain.find_data_cleanup_candidates(keep_full, &workspace)?;
-
-    if candidates_for_cleanup.is_empty() {
-        // Count total archives for display
-        let mut full_archives_count = 0;
-        for snapshot in &chain.snapshots {
-            let (archive_path, _) = workspace.snapshot_paths(&snapshot.name);
-            if archive_path.exists() {
-                full_archives_count += 1;
-            }
-        }
-        
-        println!("✅ No snapshots need data cleanup.");
-        println!("   • Full archives: {}", full_archives_count);
-        println!("   • Keep full data for: {}", keep_full);
-        return Ok(());
-    }
-
-    // Calculate space savings from removing data.parquet files
-    let mut total_space_saved = 0u64;
+    // Count total archives for display (consolidate the calculation)
     let mut full_archives_count = 0;
     for snapshot in &chain.snapshots {
         let (archive_path, _) = workspace.snapshot_paths(&snapshot.name);
@@ -719,6 +707,19 @@ fn cleanup_command(
             full_archives_count += 1;
         }
     }
+    
+    // Find snapshots that can have their full data removed (selective cleanup)
+    let candidates_for_cleanup = chain.find_data_cleanup_candidates(keep_full, &workspace)?;
+
+    if candidates_for_cleanup.is_empty() {
+        println!("✅ No snapshots need data cleanup.");
+        println!("   • Total archives: {}", full_archives_count);
+        println!("   • Keep full data for: {}", keep_full);
+        return Ok(());
+    }
+
+    // Calculate space savings from removing data.parquet files
+    let mut total_space_saved = 0u64;
     
     // Estimate space savings (this would be more accurate with actual file analysis)
     for snapshot in &candidates_for_cleanup {
@@ -729,7 +730,9 @@ fn cleanup_command(
     }
 
     println!("📊 Cleanup analysis:");
+    println!("   • Total archives: {}", full_archives_count);
     println!("   • Snapshots for data cleanup: {}", candidates_for_cleanup.len());
+    println!("   • Keep full data for: {}", keep_full);
     println!("   • Estimated space savings: {} bytes", total_space_saved);
     println!("   • Archives will retain deltas for reconstruction");
 

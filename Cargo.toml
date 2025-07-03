@@ -10,10 +10,6 @@ repository = "https://github.com/user/tabdiff"
 name = "tabdiff"
 path = "src/main.rs"
 
-[[bin]]
-name = "test_runner"
-path = "tests/test_runner.rs"
-
 [dependencies]
 # CLI and argument parsing
 clap = { version = "4.4", features = ["derive"] }

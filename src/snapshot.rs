@@ -8,8 +8,6 @@ use crate::progress::ProgressReporter;
 use crate::change_detection::ChangeDetectionResult;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use indexmap::IndexMap;
 use std::path::Path;
 
 /// Snapshot metadata stored in JSON format
@@ -191,7 +189,7 @@ impl SnapshotCreator {
             schema_hash: schema_hash.hash.clone(),
             columns: data_info.columns.clone(),
             archive_size: Some(archive_size),
-            has_full_data: true,
+            has_full_data: full_data, // Use the actual parameter instead of hardcoded true
             parent_snapshot,
             sequence_number,
             delta_from_parent,
@@ -219,58 +217,6 @@ impl SnapshotCreator {
         Ok(metadata)
     }
 
-    /// Create files for the archive
-    fn create_archive_files(
-        &self,
-        data_info: &DataInfo,
-        schema_hash: &SchemaHash,
-        row_hashes: &[RowHash],
-        column_hashes: &[ColumnHash],
-        name: &str,
-        full_data: bool,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut files = Vec::new();
-
-        // Create metadata.json
-        let metadata = serde_json::json!({
-            "name": name,
-            "created": Utc::now(),
-            "source": data_info.source.to_string_lossy(),
-            "row_count": data_info.row_count,
-            "column_count": data_info.column_count(),
-            "schema_hash": schema_hash.hash,
-            "rows_hashed": row_hashes.len(),
-            "total_rows": data_info.row_count
-        });
-        files.push((
-            "metadata.json".to_string(),
-            serde_json::to_string_pretty(&metadata)?.into_bytes(),
-        ));
-
-        // Create schema.json (simplified for now - would use Parquet in full implementation)
-        let schema_data = serde_json::json!({
-            "hash": schema_hash.hash,
-            "columns": schema_hash.columns,
-            "column_hashes": column_hashes
-        });
-        files.push((
-            "schema.json".to_string(),
-            serde_json::to_string_pretty(&schema_data)?.into_bytes(),
-        ));
-
-        // Create rows.json (simplified for now - would use Parquet in full implementation)
-        // Note: This method is unused - the optimized version is used instead
-        let rows_data = serde_json::json!({
-            "row_hashes": row_hashes,
-            "rows": [] // Empty for unused method
-        });
-        files.push((
-            "rows.json".to_string(),
-            serde_json::to_string_pretty(&rows_data)?.into_bytes(),
-        ));
-
-        Ok(files)
-    }
 
     /// Create data.parquet file with full dataset
     fn create_data_parquet(
@@ -303,77 +249,6 @@ impl SnapshotCreator {
         Ok(serde_json::to_vec_pretty(&delta_structure)?)
     }
 
-    /// Create archive files with delta support
-    fn create_archive_files_with_delta(
-        &self,
-        data_info: &DataInfo,
-        schema_hash: &SchemaHash,
-        row_hashes: &[RowHash],
-        column_hashes: &[ColumnHash],
-        name: &str,
-        _full_data: bool,
-        delta_from_parent: &Option<DeltaInfo>,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut files = Vec::new();
-
-        // Create metadata.json
-        let metadata = serde_json::json!({
-            "name": name,
-            "created": Utc::now(),
-            "source": data_info.source.to_string_lossy(),
-            "row_count": data_info.row_count,
-            "column_count": data_info.column_count(),
-            "schema_hash": schema_hash.hash,
-            "rows_hashed": row_hashes.len(),
-            "total_rows": data_info.row_count
-        });
-        files.push((
-            "metadata.json".to_string(),
-            serde_json::to_string_pretty(&metadata)?.into_bytes(),
-        ));
-
-        // Create schema.json
-        let schema_data = serde_json::json!({
-            "hash": schema_hash.hash,
-            "columns": schema_hash.columns,
-            "column_hashes": column_hashes
-        });
-        files.push((
-            "schema.json".to_string(),
-            serde_json::to_string_pretty(&schema_data)?.into_bytes(),
-        ));
-
-        // Create rows.json with full data for reliable change detection
-        // Note: This method is unused - the optimized version is used instead
-        let full_row_data: Vec<Vec<String>> = Vec::new(); // Empty for unused method
-        
-        let rows_data = serde_json::json!({
-            "row_hashes": row_hashes,
-            "rows": full_row_data
-        });
-        files.push((
-            "rows.json".to_string(),
-            serde_json::to_string_pretty(&rows_data)?.into_bytes(),
-        ));
-
-        // Create data.parquet with full dataset for reliable rollback
-        let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
-        files.push((
-            "data.parquet".to_string(),
-            data_parquet,
-        ));
-
-        // Create delta.parquet if we have delta information
-        if let Some(delta_info) = delta_from_parent {
-            let delta_parquet = self.create_delta_parquet(delta_info)?;
-            files.push((
-                "delta.parquet".to_string(),
-                delta_parquet,
-            ));
-        }
-
-        Ok(files)
-    }
 
     /// Create archive files with delta support (optimized version that reuses data processor)
     fn create_archive_files_optimized(
@@ -383,7 +258,7 @@ impl SnapshotCreator {
         row_hashes: &[RowHash],
         column_hashes: &[ColumnHash],
         name: &str,
-        _full_data: bool,
+        full_data: bool,
         delta_from_parent: &Option<DeltaInfo>,
         data_processor: &mut DataProcessor, // Reuse existing processor to avoid reloading
     ) -> Result<Vec<(String, Vec<u8>)>> {
@@ -416,22 +291,6 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&schema_data)?.into_bytes(),
         ));
 
-        // Extract full row data once for both files
-        let full_row_data = {
-            let progress_ref = &self.progress;
-            data_processor.extract_data_chunked_with_progress(
-                Some(&|processed: u64, total: u64| {
-                    if let Some(pb) = &progress_ref.archive_pb {
-                        pb.set_length(total);
-                        pb.set_position(processed);
-                        if processed % 10000 == 0 || processed == total {
-                            pb.set_message(format!("Extracting data ({}/{})", processed, total));
-                        }
-                    }
-                })
-            )?
-        };
-
         // Create rows.json with ONLY row hashes (as per README spec)
         let rows_data = serde_json::json!({
             "row_hashes": row_hashes
@@ -441,12 +300,31 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&rows_data)?.into_bytes(),
         ));
 
-        // Create data.parquet with full dataset (as per README spec)
-        let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
-        files.push((
-            "data.parquet".to_string(),
-            data_parquet,
-        ));
+        // Only create data.parquet if full_data is true (implements --full-data functionality)
+        if full_data {
+            // Extract full row data for comprehensive change detection and rollback
+            let full_row_data = {
+                let progress_ref = &self.progress;
+                data_processor.extract_data_chunked_with_progress(
+                    Some(&|processed: u64, total: u64| {
+                        if let Some(pb) = &progress_ref.archive_pb {
+                            pb.set_length(total);
+                            pb.set_position(processed);
+                            if processed % 10000 == 0 || processed == total {
+                                pb.set_message(format!("Extracting data ({}/{})", processed, total));
+                            }
+                        }
+                    })
+                )?
+            };
+
+            // Create data.parquet with full dataset (enables rollback and detailed change detection)
+            let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
+            files.push((
+                "data.parquet".to_string(),
+                data_parquet,
+            ));
+        }
 
         // Create delta.parquet if we have delta information
         if let Some(delta_info) = delta_from_parent {
@@ -465,7 +343,7 @@ impl SnapshotCreator {
         &self,
         workspace: &crate::workspace::TabdiffWorkspace,
         current_data_info: &DataInfo,
-        current_row_hashes: &[crate::hash::RowHash],
+        _current_row_hashes: &[crate::hash::RowHash],
     ) -> Result<(Option<String>, u64, Option<DeltaInfo>)> {
         // Create canonical source path for current file
         let current_canonical_path = current_data_info.source.canonicalize()
@@ -544,69 +422,12 @@ impl SnapshotCreator {
         Ok((None, 0, None))
     }
 
-    /// Extract schema from archive data
-    fn extract_schema_from_archive(&self, archive_data: &FullSnapshotData) -> Result<Vec<crate::hash::ColumnInfo>> {
-        if let Some(schema_data) = archive_data.schema_data.get("columns") {
-            if let Some(columns_array) = schema_data.as_array() {
-                let mut columns = Vec::new();
-                for col_value in columns_array {
-                    if let (Some(name), Some(data_type), Some(nullable)) = (
-                        col_value.get("name").and_then(|v| v.as_str()),
-                        col_value.get("data_type").and_then(|v| v.as_str()),
-                        col_value.get("nullable").and_then(|v| v.as_bool())
-                    ) {
-                        columns.push(crate::hash::ColumnInfo {
-                            name: name.to_string(),
-                            data_type: data_type.to_string(),
-                            nullable,
-                        });
-                    }
-                }
-                return Ok(columns);
-            }
-        }
-        Ok(Vec::new())
-    }
-
-    /// Extract row data from archive data with deterministic ordering
-    fn extract_row_data_from_archive(&self, archive_data: &FullSnapshotData) -> Result<Vec<Vec<String>>> {
-        if let Some(rows_data) = archive_data.row_data.get("rows") {
-            if let Some(rows_array) = rows_data.as_array() {
-                let mut rows = Vec::new();
-                for row_value in rows_array {
-                    if let Some(row_array) = row_value.as_array() {
-                        let row: Vec<String> = row_array
-                            .iter()
-                            .map(|v| v.as_str().unwrap_or("").to_string())
-                            .collect();
-                        rows.push(row);
-                    }
-                }
-                
-                // CRITICAL FIX: Apply the same deterministic ordering to parent data
-                // that we use for current data to ensure consistent comparison
-                rows.sort_by(|a, b| {
-                    // Sort by all columns in the same order as the deterministic SQL query
-                    for (col_a, col_b) in a.iter().zip(b.iter()) {
-                        match col_a.cmp(col_b) {
-                            std::cmp::Ordering::Equal => continue,
-                            other => return other,
-                        }
-                    }
-                    std::cmp::Ordering::Equal
-                });
-                
-                return Ok(rows);
-            }
-        }
-        Ok(Vec::new())
-    }
 
     /// Update parent's can_reconstruct_parent flag
     fn update_parent_reconstruct_flag(
         &self,
-        workspace: &crate::workspace::TabdiffWorkspace,
-        parent_name: &str,
+        _workspace: &crate::workspace::TabdiffWorkspace,
+        _parent_name: &str,
     ) -> Result<()> {
         // This method name is misleading - we're actually updating the CURRENT snapshot
         // to indicate it can reconstruct its parent, not updating the parent itself
@@ -625,37 +446,6 @@ impl SnapshotCreator {
         }
     }
 
-    /// Load cached row hashes from archive (CRITICAL FIX)
-    fn load_cached_row_hashes(&self, archive_path: &Path) -> Result<Vec<RowHash>> {
-        let files = ArchiveManager::extract_archive(archive_path)?;
-        
-        for (filename, content) in files {
-            if filename == "rows.json" {
-                let content_str = String::from_utf8(content)?;
-                let rows_data: serde_json::Value = serde_json::from_str(&content_str)?;
-                
-                if let Some(row_hashes_data) = rows_data.get("row_hashes") {
-                    if let Some(hashes_array) = row_hashes_data.as_array() {
-                        let mut row_hashes = Vec::new();
-                        for hash_value in hashes_array {
-                            if let (Some(row_index), Some(hash)) = (
-                                hash_value.get("row_index").and_then(|v| v.as_u64()),
-                                hash_value.get("hash").and_then(|v| v.as_str())
-                            ) {
-                                row_hashes.push(RowHash {
-                                    row_index,
-                                    hash: hash.to_string(),
-                                });
-                            }
-                        }
-                        return Ok(row_hashes);
-                    }
-                }
-            }
-        }
-        
-        Ok(Vec::new())
-    }
 
     /// Load cached row data from archive for detailed comparison
     fn load_cached_row_data(&self, archive_path: &Path) -> Result<Vec<Vec<String>>> {
@@ -734,82 +524,6 @@ impl SnapshotCreator {
         Ok(row_data)
     }
 
-    /// Convert hash comparison to change detection format
-    fn convert_hash_comparison_to_changes(
-        &self,
-        comparison: &crate::hash::RowHashComparison,
-        columns: &[crate::hash::ColumnInfo],
-    ) -> Result<ChangeDetectionResult> {
-        use crate::change_detection::*;
-        
-        // Create simplified change detection result from hash comparison
-        let mut modified = Vec::new();
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
-        
-        // Convert changed rows to modifications
-        for &row_idx in &comparison.changed_rows {
-            let mut changes = HashMap::new();
-            changes.insert("_content_changed".to_string(), CellChange {
-                before: "changed".to_string(),
-                after: "changed".to_string(),
-            });
-            
-            modified.push(RowModification {
-                row_index: row_idx,
-                changes,
-            });
-        }
-        
-        // Convert added rows
-        for &row_idx in &comparison.added_rows {
-            let mut data = HashMap::new();
-            // Create placeholder data for added rows
-            for col in columns {
-                data.insert(col.name.clone(), "added".to_string());
-            }
-            
-            added.push(RowAddition {
-                row_index: row_idx,
-                data,
-            });
-        }
-        
-        // Convert removed rows
-        for &row_idx in &comparison.removed_rows {
-            let mut data = HashMap::new();
-            // Create placeholder data for removed rows
-            for col in columns {
-                data.insert(col.name.clone(), "removed".to_string());
-            }
-            
-            removed.push(RowRemoval {
-                row_index: row_idx,
-                data,
-            });
-        }
-        
-        let row_changes = RowChanges {
-            modified,
-            added,
-            removed,
-        };
-        
-        // No schema changes for hash-based comparison
-        let schema_changes = SchemaChanges {
-            column_order: None,
-            columns_added: Vec::new(),
-            columns_removed: Vec::new(),
-            columns_renamed: Vec::new(),
-            type_changes: Vec::new(),
-        };
-        
-        Ok(ChangeDetectionResult {
-            schema_changes,
-            row_changes,
-            rollback_operations: Vec::new(), // Simplified for now
-        })
-    }
 }
 
 /// Snapshot loader for reading existing snapshots

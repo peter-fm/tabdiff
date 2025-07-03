@@ -4,8 +4,6 @@ use crate::error::Result;
 use crate::hash::ColumnInfo;
 use blake3;
 use duckdb::Connection;
-use num_bigint::BigUint;
-use num_traits::Num;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -325,54 +323,6 @@ impl DataProcessor {
     }
 
 
-    /// Safe hash conversion using num-bigint to handle large integers
-    fn safe_hash_conversion(&self, hash_hex: &str) -> String {
-        // Parse the hex string as BigUint
-        let big_hash = BigUint::from_str_radix(hash_hex, 16)
-            .unwrap_or_else(|_| BigUint::from(0u64));
-        
-        // Convert to a consistent 64-bit representation
-        let hash_u64 = if big_hash > BigUint::from(u64::MAX) {
-            // For very large hashes, use modulo to fit in u64
-            let modulo_result = &big_hash % BigUint::from(u64::MAX);
-            modulo_result.to_string().parse::<u64>().unwrap_or(0)
-        } else {
-            big_hash.to_string().parse::<u64>().unwrap_or(0)
-        };
-        
-        // Return as consistent hex format
-        format!("{:016x}", hash_u64)
-    }
-
-    /// Robust hash extraction from DuckDB row with proper type handling
-    fn robust_hash_extraction(&self, row: &duckdb::Row, index: usize) -> Result<String> {
-        match row.get_ref(index).map_err(|e| crate::error::TabdiffError::data_processing(
-            format!("Failed to get value at index {}: {}", index, e)
-        ))? {
-            duckdb::types::ValueRef::Text(s) => {
-                let hex_str = String::from_utf8_lossy(s);
-                Ok(self.safe_hash_conversion(&hex_str))
-            },
-            duckdb::types::ValueRef::BigInt(i) => {
-                Ok(format!("{:016x}", i.abs() as u64))
-            },
-            duckdb::types::ValueRef::HugeInt(i) => {
-                // Handle 128-bit integers safely using num-bigint
-                let big_int = BigUint::from(i.abs() as u128);
-                Ok(self.safe_hash_conversion(&format!("{:x}", big_int)))
-            },
-            duckdb::types::ValueRef::UBigInt(i) => {
-                Ok(format!("{:016x}", i))
-            },
-            duckdb::types::ValueRef::Int(i) => {
-                Ok(format!("{:016x}", i.abs() as u64))
-            },
-            _ => {
-                // Fallback for any other type
-                Ok("0000000000000000".to_string())
-            }
-        }
-    }
 
     /// Compute row hashes directly in DuckDB for maximum performance (robust version)
     pub fn compute_row_hashes_sql(&mut self) -> Result<Vec<crate::hash::RowHash>> {
@@ -552,35 +502,6 @@ impl DataProcessor {
         Ok(column_hashes)
     }
 
-    /// Helper method to extract value as string from DuckDB row
-    fn extract_value_as_string(&self, row: &duckdb::Row, index: usize) -> Result<String> {
-        let value: String = match row.get_ref(index)
-            .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to get value at index {}: {}", index, e)
-            ))? {
-            duckdb::types::ValueRef::Null => String::new(),
-            duckdb::types::ValueRef::Boolean(b) => b.to_string(),
-            duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
-            duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
-            duckdb::types::ValueRef::Int(i) => i.to_string(),
-            duckdb::types::ValueRef::BigInt(i) => i.to_string(),
-            duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
-            duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
-            duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
-            duckdb::types::ValueRef::UInt(i) => i.to_string(),
-            duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
-            duckdb::types::ValueRef::Float(f) => f.to_string(),
-            duckdb::types::ValueRef::Double(f) => f.to_string(),
-            duckdb::types::ValueRef::Decimal(d) => d.to_string(),
-            duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
-            duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
-            duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
-            duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
-            duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
-            _ => "<unknown>".to_string(),
-        };
-        Ok(value)
-    }
 
 
     /// Check if file format is supported

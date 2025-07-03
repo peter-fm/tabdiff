@@ -85,9 +85,12 @@ Input File → DataProcessor → HashComputer → SnapshotCreator → Archive + 
 - **Implementation**: `init_command()` in `commands.rs`
 
 #### `tabdiff snapshot <input> --name <name> [--full-data] [--batch-size N]`
-- **Purpose**: Create snapshot with optional delta chain
-- **Process**: Load data → Hash → Create archive → Update chain
+- **Purpose**: Create snapshot with optional delta chain and configurable data storage
+- **Process**: Load data → Hash → Create archive (with or without full data) → Update chain
 - **Implementation**: `snapshot_command()` → `SnapshotCreator::create_snapshot_with_workspace()`
+- **Key Options**:
+  - `--full-data`: Store complete row data for comprehensive change detection and rollback capability
+  - Without `--full-data`: Store only row hashes for basic change detection (smaller storage, no rollback)
 
 #### `tabdiff status <input> [--compare-to <snapshot>] [--json]`
 - **Purpose**: Compare current data against snapshot with detailed changes
