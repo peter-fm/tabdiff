@@ -229,85 +229,342 @@ impl ChangeDetector {
         })
     }
 
-    /// Detect row changes using optimized hash-based comparison (FAST!)
+    /// Detect row changes using optimized hash-based comparison with intelligent modification detection
     fn detect_row_changes(
         baseline_schema: &[ColumnInfo],
         baseline_data: &[Vec<String>],
         current_schema: &[ColumnInfo],
         current_data: &[Vec<String>],
     ) -> Result<RowChanges> {
-        // Use the optimized hash-based comparison instead of slow row-by-row comparison
+        // Phase 1: Fast hash-based filtering to identify changed rows
         let hash_computer = crate::hash::HashComputer::new(10000);
-        
-        // Compute hashes for both datasets
         let baseline_hashes = hash_computer.hash_rows(baseline_data)?;
         let current_hashes = hash_computer.hash_rows(current_data)?;
-        
-        // Use the fast hash comparison algorithm
         let comparison = hash_computer.compare_row_hashes(&baseline_hashes, &current_hashes);
         
-        // Convert hash comparison results to change detection format
-        let mut modified = Vec::new();
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
+        // Phase 2: Intelligent row classification for changed subset only
+        let (modifications, genuine_additions, genuine_removals) = Self::classify_changed_rows(
+            baseline_schema,
+            baseline_data,
+            current_schema,
+            current_data,
+            &comparison.added_rows,
+            &comparison.removed_rows,
+        )?;
         
-        // For now, treat all changes as modifications rather than trying to detect specific cell changes
-        // This is much faster and still provides the essential change information
-        for &row_idx in &comparison.changed_rows {
-            // Create a placeholder modification (detailed cell changes would require expensive comparison)
-            let mut changes = HashMap::new();
-            changes.insert("_row_changed".to_string(), CellChange {
-                before: "changed".to_string(),
-                after: "changed".to_string(),
-            });
-            
-            modified.push(RowModification {
-                row_index: row_idx,
-                changes,
-            });
+        // Phase 3: Parallel cell-level analysis for modifications only
+        let detailed_modifications = Self::analyze_modifications_parallel(
+            baseline_schema,
+            baseline_data,
+            current_schema,
+            current_data,
+            &modifications,
+        )?;
+        
+        // Convert results to final format
+        let added = Self::convert_additions_parallel(current_schema, current_data, &genuine_additions)?;
+        let removed = Self::convert_removals_parallel(baseline_schema, baseline_data, &genuine_removals)?;
+
+        Ok(RowChanges {
+            modified: detailed_modifications,
+            added,
+            removed,
+        })
+    }
+
+    /// Classify changed rows into modifications vs genuine additions/removals
+    fn classify_changed_rows(
+        baseline_schema: &[ColumnInfo],
+        baseline_data: &[Vec<String>],
+        current_schema: &[ColumnInfo],
+        current_data: &[Vec<String>],
+        added_indices: &[u64],
+        removed_indices: &[u64],
+    ) -> Result<(Vec<(u64, u64)>, Vec<u64>, Vec<u64>)> {
+        use rayon::prelude::*;
+        
+        // Early exit if no changes
+        if added_indices.is_empty() && removed_indices.is_empty() {
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
         
-        // Convert added rows
-        for &row_idx in &comparison.added_rows {
-            let mut data = HashMap::new();
-            if let Some(row_data) = current_data.get(row_idx as usize) {
-                // Create column name to index mapping for current schema
+        // Create column mapping for schema-aware comparison
+        let common_columns = Self::find_common_columns(baseline_schema, current_schema);
+        
+        // Parallel matching: find likely modifications using position and content heuristics
+        let mut modifications = Vec::new();
+        let mut unmatched_added = added_indices.to_vec();
+        let mut unmatched_removed = removed_indices.to_vec();
+        
+        // Strategy 1: Position-based matching (most common case)
+        let position_matches: Vec<_> = removed_indices
+            .par_iter()
+            .filter_map(|&removed_idx| {
+                // Look for an added row at the same position
+                if let Some(added_pos) = added_indices.iter().position(|&added_idx| added_idx == removed_idx) {
+                    Some((removed_idx, added_indices[added_pos]))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Remove position matches from unmatched lists
+        for &(removed_idx, added_idx) in &position_matches {
+            modifications.push((removed_idx, added_idx));
+            unmatched_removed.retain(|&x| x != removed_idx);
+            unmatched_added.retain(|&x| x != added_idx);
+        }
+        
+        // Strategy 2: Content-based matching for remaining rows (using key columns)
+        if !unmatched_removed.is_empty() && !unmatched_added.is_empty() && !common_columns.is_empty() {
+            let content_matches = Self::find_content_matches_parallel(
+                baseline_data,
+                current_data,
+                &unmatched_removed,
+                &unmatched_added,
+                &common_columns,
+            )?;
+            
+            for &(removed_idx, added_idx) in &content_matches {
+                modifications.push((removed_idx, added_idx));
+                unmatched_removed.retain(|&x| x != removed_idx);
+                unmatched_added.retain(|&x| x != added_idx);
+            }
+        }
+        
+        Ok((modifications, unmatched_added, unmatched_removed))
+    }
+    
+    /// Find common columns between schemas for content matching
+    fn find_common_columns(baseline_schema: &[ColumnInfo], current_schema: &[ColumnInfo]) -> Vec<String> {
+        let current_names: std::collections::HashSet<_> = current_schema.iter().map(|c| &c.name).collect();
+        baseline_schema
+            .iter()
+            .filter_map(|col| {
+                if current_names.contains(&col.name) {
+                    Some(col.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    
+    /// Find content-based matches using parallel processing
+    fn find_content_matches_parallel(
+        baseline_data: &[Vec<String>],
+        current_data: &[Vec<String>],
+        removed_indices: &[u64],
+        added_indices: &[u64],
+        common_columns: &[String],
+    ) -> Result<Vec<(u64, u64)>> {
+        use rayon::prelude::*;
+        
+        // Create column index mappings
+        let baseline_col_map: std::collections::HashMap<String, usize> = common_columns
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+        
+        // Parallel content matching with similarity scoring
+        let matches: Vec<_> = removed_indices
+            .par_iter()
+            .filter_map(|&removed_idx| {
+                let removed_row = baseline_data.get(removed_idx as usize)?;
+                
+                // Find best match among added rows
+                let best_match = added_indices
+                    .iter()
+                    .filter_map(|&added_idx| {
+                        let added_row = current_data.get(added_idx as usize)?;
+                        let similarity = Self::calculate_row_similarity(
+                            removed_row,
+                            added_row,
+                            common_columns,
+                            &baseline_col_map,
+                        );
+                        Some((added_idx, similarity))
+                    })
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                
+                // Only consider it a match if similarity is above threshold
+                if let Some((added_idx, similarity)) = best_match {
+                    if similarity > 0.5 { // At least 50% of key columns match
+                        Some((removed_idx, added_idx))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        Ok(matches)
+    }
+    
+    /// Calculate similarity between two rows based on common columns
+    fn calculate_row_similarity(
+        row1: &[String],
+        row2: &[String],
+        common_columns: &[String],
+        col_map: &std::collections::HashMap<String, usize>,
+    ) -> f64 {
+        let mut matches = 0;
+        let mut total = 0;
+        
+        for col_name in common_columns {
+            if let Some(&col_idx) = col_map.get(col_name) {
+                if let (Some(val1), Some(val2)) = (row1.get(col_idx), row2.get(col_idx)) {
+                    total += 1;
+                    if val1 == val2 {
+                        matches += 1;
+                    }
+                }
+            }
+        }
+        
+        if total > 0 {
+            matches as f64 / total as f64
+        } else {
+            0.0
+        }
+    }
+    
+    /// Analyze modifications in parallel to detect cell-level changes
+    fn analyze_modifications_parallel(
+        baseline_schema: &[ColumnInfo],
+        baseline_data: &[Vec<String>],
+        current_schema: &[ColumnInfo],
+        current_data: &[Vec<String>],
+        modifications: &[(u64, u64)],
+    ) -> Result<Vec<RowModification>> {
+        use rayon::prelude::*;
+        
+        // Create column mappings for schema-aware comparison
+        let baseline_col_map: std::collections::HashMap<String, usize> = baseline_schema
+            .iter()
+            .enumerate()
+            .map(|(i, col)| (col.name.clone(), i))
+            .collect();
+        
+        let current_col_map: std::collections::HashMap<String, usize> = current_schema
+            .iter()
+            .enumerate()
+            .map(|(i, col)| (col.name.clone(), i))
+            .collect();
+        
+        // Parallel cell-level analysis
+        let detailed_modifications: Vec<_> = modifications
+            .par_iter()
+            .filter_map(|&(baseline_idx, current_idx)| {
+                let baseline_row = baseline_data.get(baseline_idx as usize)?;
+                let current_row = current_data.get(current_idx as usize)?;
+                
+                let changes = Self::compare_rows_schema_aware(
+                    baseline_row,
+                    current_row,
+                    &baseline_col_map,
+                    &current_col_map,
+                );
+                
+                if !changes.is_empty() {
+                    Some(RowModification {
+                        row_index: current_idx, // Use current position as the canonical index
+                        changes,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        Ok(detailed_modifications)
+    }
+    
+    /// Compare two rows with schema awareness
+    fn compare_rows_schema_aware(
+        baseline_row: &[String],
+        current_row: &[String],
+        baseline_col_map: &std::collections::HashMap<String, usize>,
+        current_col_map: &std::collections::HashMap<String, usize>,
+    ) -> HashMap<String, CellChange> {
+        let mut changes = HashMap::new();
+        
+        // Compare common columns only
+        for col_name in baseline_col_map.keys() {
+            if let (Some(&baseline_idx), Some(&current_idx)) = 
+                (baseline_col_map.get(col_name), current_col_map.get(col_name)) {
+                
+                let baseline_value = baseline_row.get(baseline_idx).map(|s| s.as_str()).unwrap_or("");
+                let current_value = current_row.get(current_idx).map(|s| s.as_str()).unwrap_or("");
+                
+                if baseline_value != current_value {
+                    changes.insert(col_name.clone(), CellChange {
+                        before: baseline_value.to_string(),
+                        after: current_value.to_string(),
+                    });
+                }
+            }
+        }
+        
+        changes
+    }
+    
+    /// Convert genuine additions to RowAddition format in parallel
+    fn convert_additions_parallel(
+        current_schema: &[ColumnInfo],
+        current_data: &[Vec<String>],
+        added_indices: &[u64],
+    ) -> Result<Vec<RowAddition>> {
+        use rayon::prelude::*;
+        
+        let additions: Vec<_> = added_indices
+            .par_iter()
+            .filter_map(|&row_idx| {
+                let row_data = current_data.get(row_idx as usize)?;
+                let mut data = HashMap::new();
+                
                 for (col_idx, col) in current_schema.iter().enumerate() {
                     if let Some(value) = row_data.get(col_idx) {
                         data.insert(col.name.clone(), value.clone());
                     }
                 }
-            }
-            
-            added.push(RowAddition {
-                row_index: row_idx,
-                data,
-            });
-        }
+                
+                Some(RowAddition { row_index: row_idx, data })
+            })
+            .collect();
         
-        // Convert removed rows
-        for &row_idx in &comparison.removed_rows {
-            let mut data = HashMap::new();
-            if let Some(row_data) = baseline_data.get(row_idx as usize) {
-                // Create column name to index mapping for baseline schema
+        Ok(additions)
+    }
+    
+    /// Convert genuine removals to RowRemoval format in parallel
+    fn convert_removals_parallel(
+        baseline_schema: &[ColumnInfo],
+        baseline_data: &[Vec<String>],
+        removed_indices: &[u64],
+    ) -> Result<Vec<RowRemoval>> {
+        use rayon::prelude::*;
+        
+        let removals: Vec<_> = removed_indices
+            .par_iter()
+            .filter_map(|&row_idx| {
+                let row_data = baseline_data.get(row_idx as usize)?;
+                let mut data = HashMap::new();
+                
                 for (col_idx, col) in baseline_schema.iter().enumerate() {
                     if let Some(value) = row_data.get(col_idx) {
                         data.insert(col.name.clone(), value.clone());
                     }
                 }
-            }
-            
-            removed.push(RowRemoval {
-                row_index: row_idx,
-                data,
-            });
-        }
-
-        Ok(RowChanges {
-            modified,
-            added,
-            removed,
-        })
+                
+                Some(RowRemoval { row_index: row_idx, data })
+            })
+            .collect();
+        
+        Ok(removals)
     }
 
     /// Convert positional rows to column-name-based maps
