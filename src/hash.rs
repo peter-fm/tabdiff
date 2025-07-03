@@ -119,9 +119,7 @@ impl HashComputer {
             });
         }
         
-        // Sort by column name for consistency
-        column_hashes.sort_by(|a, b| a.column_name.cmp(&b.column_name));
-        
+        // Preserve original column order - don't sort alphabetically
         Ok(column_hashes)
     }
 

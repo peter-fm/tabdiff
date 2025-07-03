@@ -403,21 +403,21 @@ impl DataProcessor {
         let mut processed_rows = 0u64;
         let start_time = std::time::Instant::now();
         
-        // CRITICAL FIX: Use deterministic ordering based on all columns
-        // This ensures consistent row order between snapshots
+        // Use natural file order - no ORDER BY clause needed
+        // DuckDB preserves the original row order from CSV files
         let column_list = columns.iter()
             .map(|c| format!("\"{}\"", c.name))
             .collect::<Vec<_>>()
             .join(", ");
         
-        let deterministic_sql = format!(
-            "SELECT {} FROM data_view ORDER BY {}",
-            column_list, column_list
+        let natural_order_sql = format!(
+            "SELECT {} FROM data_view",
+            column_list
         );
         
-        let mut stmt = self.connection.prepare(&deterministic_sql)
+        let mut stmt = self.connection.prepare(&natural_order_sql)
             .map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to prepare deterministic query: {}", e)
+                format!("Failed to prepare natural order query: {}", e)
             ))?;
 
         let rows = stmt.query_map([], |row| {
@@ -548,8 +548,7 @@ impl DataProcessor {
             });
         }
 
-        // Sort by column name for consistency
-        column_hashes.sort_by(|a, b| a.column_name.cmp(&b.column_name));
+        // Preserve original column order - don't sort alphabetically
         Ok(column_hashes)
     }
 
