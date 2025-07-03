@@ -357,19 +357,30 @@ fn diff_command(
     let schema_changed = metadata1.schema_hash != metadata2.schema_hash;
     let mut columns_changed = Vec::new();
     
-    for (col_name, hash1) in &metadata1.columns {
-        if let Some(hash2) = metadata2.columns.get(col_name) {
-            if hash1 != hash2 {
-                columns_changed.push(col_name.clone());
+    // Create maps for easier comparison
+    let metadata1_map: std::collections::HashMap<String, String> = metadata1.columns
+        .iter()
+        .map(|col| (col.name.clone(), format!("{}:{}", col.data_type, col.nullable)))
+        .collect();
+    
+    let metadata2_map: std::collections::HashMap<String, String> = metadata2.columns
+        .iter()
+        .map(|col| (col.name.clone(), format!("{}:{}", col.data_type, col.nullable)))
+        .collect();
+
+    for (col_name, type_info1) in &metadata1_map {
+        if let Some(type_info2) = metadata2_map.get(col_name) {
+            if type_info1 != type_info2 {
+                columns_changed.push(format!("  {} (type/nullable changed)", col_name));
             }
         } else {
-            columns_changed.push(format!("{} (removed)", col_name));
+            columns_changed.push(format!("  {} (removed)", col_name));
         }
     }
-    
-    for col_name in metadata2.columns.keys() {
-        if !metadata1.columns.contains_key(col_name) {
-            columns_changed.push(format!("{} (added)", col_name));
+
+    for col_name in metadata2_map.keys() {
+        if !metadata1_map.contains_key(col_name) {
+            columns_changed.push(format!("  {} (added)", col_name));
         }
     }
 

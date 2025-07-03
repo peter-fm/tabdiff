@@ -147,7 +147,7 @@ impl ChangeDetector {
         })
     }
 
-    /// Detect schema changes
+    /// Detect schema changes using position-based comparison
     fn detect_schema_changes(
         baseline: &[ColumnInfo],
         current: &[ColumnInfo],
@@ -155,70 +155,80 @@ impl ChangeDetector {
         let baseline_names: Vec<String> = baseline.iter().map(|c| c.name.clone()).collect();
         let current_names: Vec<String> = current.iter().map(|c| c.name.clone()).collect();
 
-        // Create maps for efficient lookup
-        let baseline_map: HashMap<String, &ColumnInfo> = baseline
-            .iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-        let current_map: HashMap<String, &ColumnInfo> = current
-            .iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-
-        // Detect column order changes
-        let column_order = if baseline_names != current_names {
-            Some(ColumnOrderChange {
-                before: baseline_names.clone(),
-                after: current_names.clone(),
-            })
+        // Detect column order changes (if column names are reordered)
+        let column_order = if baseline_names != current_names && baseline.len() == current.len() {
+            // Check if it's just a reordering (same columns, different order)
+            let mut baseline_sorted = baseline_names.clone();
+            let mut current_sorted = current_names.clone();
+            baseline_sorted.sort();
+            current_sorted.sort();
+            
+            if baseline_sorted == current_sorted {
+                Some(ColumnOrderChange {
+                    before: baseline_names.clone(),
+                    after: current_names.clone(),
+                })
+            } else {
+                None // Not just reordering, there are additions/removals/renames
+            }
         } else {
             None
         };
 
-        // Detect added columns
         let mut columns_added = Vec::new();
-        for (pos, col) in current.iter().enumerate() {
-            if !baseline_map.contains_key(&col.name) {
-                columns_added.push(ColumnAddition {
-                    name: col.name.clone(),
-                    data_type: col.data_type.clone(),
-                    position: pos,
-                    nullable: col.nullable,
-                    default_value: None, // Could be enhanced to detect default values
-                });
-            }
-        }
-
-        // Detect removed columns
         let mut columns_removed = Vec::new();
-        for (pos, col) in baseline.iter().enumerate() {
-            if !current_map.contains_key(&col.name) {
-                columns_removed.push(ColumnRemoval {
-                    name: col.name.clone(),
-                    data_type: col.data_type.clone(),
-                    position: pos,
-                    nullable: col.nullable,
-                });
-            }
-        }
-
-        // Detect type changes (for columns that exist in both)
+        let mut columns_renamed = Vec::new();
         let mut type_changes = Vec::new();
-        for col in baseline {
-            if let Some(current_col) = current_map.get(&col.name) {
-                if col.data_type != current_col.data_type {
-                    type_changes.push(TypeChange {
-                        column: col.name.clone(),
-                        from: col.data_type.clone(),
-                        to: current_col.data_type.clone(),
+
+        // Handle different column counts (additions/removals)
+        if baseline.len() != current.len() {
+            if current.len() > baseline.len() {
+                // Columns were added at the end
+                for (pos, col) in current.iter().enumerate().skip(baseline.len()) {
+                    columns_added.push(ColumnAddition {
+                        name: col.name.clone(),
+                        data_type: col.data_type.clone(),
+                        position: pos,
+                        nullable: col.nullable,
+                        default_value: None,
+                    });
+                }
+            } else {
+                // Columns were removed from the end
+                for (pos, col) in baseline.iter().enumerate().skip(current.len()) {
+                    columns_removed.push(ColumnRemoval {
+                        name: col.name.clone(),
+                        data_type: col.data_type.clone(),
+                        position: pos,
+                        nullable: col.nullable,
                     });
                 }
             }
         }
 
-        // Note: Column renames are complex to detect automatically
-        // For now, we treat them as remove + add
-        let columns_renamed = Vec::new();
+        // Compare columns position by position (for common length)
+        let min_len = baseline.len().min(current.len());
+        for pos in 0..min_len {
+            let baseline_col = &baseline[pos];
+            let current_col = &current[pos];
+
+            // Check for column rename at this position
+            if baseline_col.name != current_col.name {
+                columns_renamed.push(ColumnRename {
+                    from: baseline_col.name.clone(),
+                    to: current_col.name.clone(),
+                });
+            }
+
+            // Check for type change at this position
+            if baseline_col.data_type != current_col.data_type {
+                type_changes.push(TypeChange {
+                    column: current_col.name.clone(), // Use current name in case it was renamed
+                    from: baseline_col.data_type.clone(),
+                    to: current_col.data_type.clone(),
+                });
+            }
+        }
 
         Ok(SchemaChanges {
             column_order,

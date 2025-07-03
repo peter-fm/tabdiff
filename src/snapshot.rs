@@ -3,7 +3,7 @@
 use crate::archive::ArchiveManager;
 use crate::data::{DataInfo, DataProcessor};
 use crate::error::{Result, TabdiffError};
-use crate::hash::{ColumnHash, HashComputer, RowHash, SchemaHash};
+use crate::hash::{ColumnHash, ColumnInfo, HashComputer, RowHash, SchemaHash};
 use crate::progress::ProgressReporter;
 use crate::change_detection::ChangeDetectionResult;
 use chrono::{DateTime, Utc};
@@ -23,7 +23,7 @@ pub struct SnapshotMetadata {
     pub row_count: u64,
     pub column_count: usize,
     pub schema_hash: String,
-    pub columns: IndexMap<String, String>,
+    pub columns: Vec<ColumnInfo>,
     pub archive_size: Option<u64>,
     pub has_full_data: bool,
     // Enhanced snapshot chain fields (with defaults for backward compatibility)
@@ -189,10 +189,7 @@ impl SnapshotCreator {
             row_count: data_info.row_count,
             column_count: data_info.column_count(),
             schema_hash: schema_hash.hash.clone(),
-            columns: column_hashes
-                .iter()
-                .map(|ch| (ch.column_name.clone(), ch.hash.clone()))
-                .collect(),
+            columns: data_info.columns.clone(),
             archive_size: Some(archive_size),
             has_full_data: true,
             parent_snapshot,
@@ -506,74 +503,35 @@ impl SnapshotCreator {
                     }
                 }
                 
-                // CRITICAL FIX: Use full data comparison for proper modification detection
+                // CRITICAL FIX: Always check for schema changes, not just row changes
                 if parent_archive_path.exists() {
-                    // Step 1: Load cached parent row hashes for fast filtering
-                    let parent_row_hashes = self.load_cached_row_hashes(&parent_archive_path)?;
+                    // Step 1: Load parent schema and data for comparison
+                    let parent_schema = self.load_cached_schema(&parent_archive_path)?;
+                    let parent_row_data = self.load_cached_row_data(&parent_archive_path)?;
+                    let current_row_data = self.extract_current_row_data(current_data_info)?;
                     
-                    // Step 2: Compare hashes to identify changed rows (fast)
-                    let hash_comparison = self.hash_computer.compare_row_hashes(&parent_row_hashes, current_row_hashes);
+                    // Step 2: Always run comprehensive change detection (schema + rows)
+                    let changes = crate::change_detection::ChangeDetector::detect_changes(
+                        &parent_schema,
+                        &parent_row_data,
+                        &current_data_info.columns,
+                        &current_row_data,
+                    )?;
                     
-                    // Step 3: If there are changes, load full data for detailed comparison
-                    if hash_comparison.has_changes() {
-                        // Load parent full row data from archive
-                        let parent_row_data = self.load_cached_row_data(&parent_archive_path)?;
-                        
-                        // Load parent schema from archive
-                        let parent_schema = self.load_cached_schema(&parent_archive_path)?;
-                        
-                        // Load current full row data (we need to extract this from current data processor)
-                        let current_row_data = self.extract_current_row_data(current_data_info)?;
-                        
-                        // Step 4: Use sophisticated change detection with full data
-                        let changes = crate::change_detection::ChangeDetector::detect_changes(
-                            &parent_schema,
-                            &parent_row_data,
-                            &current_data_info.columns,
-                            &current_row_data,
-                        )?;
-                        
-                        // Calculate compressed size (estimate based on JSON serialization)
-                        let changes_json = serde_json::to_string(&changes)?;
-                        let compressed_size = changes_json.len() as u64;
-                        
-                        let delta_info = DeltaInfo {
-                            parent_name: head_name.clone(),
-                            changes,
-                            compressed_size,
-                        };
-                        
-                        let sequence_number = parent_metadata.sequence_number + 1;
-                        
-                        return Ok((Some(head_name.clone()), sequence_number, Some(delta_info)));
-                    } else {
-                        // No changes detected - create delta with empty changes
-                        let changes = crate::change_detection::ChangeDetectionResult {
-                            schema_changes: crate::change_detection::SchemaChanges {
-                                column_order: None,
-                                columns_added: Vec::new(),
-                                columns_removed: Vec::new(),
-                                columns_renamed: Vec::new(),
-                                type_changes: Vec::new(),
-                            },
-                            row_changes: crate::change_detection::RowChanges {
-                                modified: Vec::new(),
-                                added: Vec::new(),
-                                removed: Vec::new(),
-                            },
-                            rollback_operations: Vec::new(),
-                        };
-                        
-                        let delta_info = DeltaInfo {
-                            parent_name: head_name.clone(),
-                            changes,
-                            compressed_size: 0,
-                        };
-                        
-                        let sequence_number = parent_metadata.sequence_number + 1;
-                        
-                        return Ok((Some(head_name.clone()), sequence_number, Some(delta_info)));
-                    }
+                    // Step 3: Create delta info regardless of whether changes exist
+                    // (even "no changes" is valuable information for the chain)
+                    let changes_json = serde_json::to_string(&changes)?;
+                    let compressed_size = changes_json.len() as u64;
+                    
+                    let delta_info = DeltaInfo {
+                        parent_name: head_name.clone(),
+                        changes,
+                        compressed_size,
+                    };
+                    
+                    let sequence_number = parent_metadata.sequence_number + 1;
+                    
+                    return Ok((Some(head_name.clone()), sequence_number, Some(delta_info)));
                 }
                 
                 // Parent exists but no archive data - still create chain link
@@ -1252,7 +1210,7 @@ mod tests {
             row_count: 100,
             column_count: 3,
             schema_hash: "def456".to_string(),
-            columns: IndexMap::new(),
+            columns: Vec::new(),
             archive_size: Some(1024),
             has_full_data: true,
             parent_snapshot: None,
@@ -1285,7 +1243,7 @@ mod tests {
             row_count: 100,
             column_count: 3,
             schema_hash: "def456".to_string(),
-            columns: IndexMap::new(),
+            columns: Vec::new(),
             archive_size: Some(1024),
             has_full_data: true,
             parent_snapshot: None,
