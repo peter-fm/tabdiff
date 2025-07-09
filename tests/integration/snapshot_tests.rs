@@ -37,7 +37,6 @@ fn test_snapshot_command_with_full_data() {
     runner.expect_success(&[
         "snapshot", csv_path.to_str().unwrap(), 
         "--name", "full_data_snapshot", 
-        "--full-data"
     ]);
     
     runner.fixture().assert_snapshot_exists("full_data_snapshot");

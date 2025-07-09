@@ -31,12 +31,12 @@ fn test_diff_detects_price_changes() {
     let baseline_csv = runner.fixture().create_csv("baseline.csv", &baseline_data).unwrap();
     let modified_csv = runner.fixture().create_csv("modified.csv", &modified_data).unwrap();
     
-    // Create snapshots
+    // Create snapshots (using default --full-data behavior)
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     runner.expect_success(&[
-        "snapshot", modified_csv.to_str().unwrap(), "--name", "modified", "--full-data"
+        "snapshot", modified_csv.to_str().unwrap(), "--name", "modified"
     ]);
     
     // Generate diff
@@ -87,10 +87,10 @@ fn test_diff_detects_row_additions() {
     
     // Create snapshots
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     runner.expect_success(&[
-        "snapshot", expanded_csv.to_str().unwrap(), "--name", "expanded", "--full-data"
+        "snapshot", expanded_csv.to_str().unwrap(), "--name", "expanded"
     ]);
     
     // Generate diff
@@ -134,10 +134,10 @@ fn test_diff_detects_schema_changes() {
     
     // Create snapshots
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     runner.expect_success(&[
-        "snapshot", schema_csv.to_str().unwrap(), "--name", "schema_changed", "--full-data"
+        "snapshot", schema_csv.to_str().unwrap(), "--name", "schema_changed"
     ]);
     
     // Generate diff
@@ -183,7 +183,7 @@ fn test_rollback_restores_full_data_not_just_headers() {
     
     // Create baseline snapshot
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     
     // Execute rollback
@@ -246,7 +246,7 @@ fn test_rollback_preserves_exact_data_format() {
     
     // Create baseline snapshot
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     
     // Execute rollback
@@ -305,13 +305,13 @@ fn test_end_to_end_diff_and_rollback_workflow() {
     
     // Create snapshots
     runner.expect_success(&[
-        "snapshot", v1_csv.to_str().unwrap(), "--name", "v1", "--full-data"
+        "snapshot", v1_csv.to_str().unwrap(), "--name", "v1"
     ]);
     runner.expect_success(&[
-        "snapshot", v2_csv.to_str().unwrap(), "--name", "v2", "--full-data"
+        "snapshot", v2_csv.to_str().unwrap(), "--name", "v2"
     ]);
     runner.expect_success(&[
-        "snapshot", current_file.to_str().unwrap(), "--name", "v3", "--full-data"
+        "snapshot", current_file.to_str().unwrap(), "--name", "v3"
     ]);
     
     // Test diff v1 -> v2

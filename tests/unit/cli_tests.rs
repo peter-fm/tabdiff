@@ -6,15 +6,16 @@ use clap::Parser;
 #[test]
 fn test_cli_snapshot_command_with_full_data() {
     let cli = Cli::try_parse_from(&[
-        "tabdiff", "snapshot", "data.csv", "--name", "test", "--full-data"
+        "tabdiff", "snapshot", "data.csv", "--name", "test"
     ]).unwrap();
     
     match cli.command {
-        Commands::Snapshot { input, name, batch_size, full_data } => {
+        Commands::Snapshot { input, name, batch_size, full_data, hash_only } => {
             assert_eq!(input, "data.csv");
             assert_eq!(name, "test");
             assert_eq!(batch_size, 10000);
             assert!(full_data);
+            assert!(!hash_only);
         }
         _ => panic!("Expected Snapshot command"),
     }

@@ -19,7 +19,16 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
             name,
             batch_size,
             full_data,
-        } => snapshot_command(workspace_path, &input, &name, batch_size, full_data),
+            hash_only,
+        } => {
+            // Determine final full_data setting
+            let enable_full_data = if hash_only {
+                false
+            } else {
+                full_data
+            };
+            snapshot_command(workspace_path, &input, &name, batch_size, enable_full_data)
+        },
         Commands::Diff {
             snapshot1,
             snapshot2,
@@ -288,6 +297,24 @@ fn snapshot_command(
         // Resolve relative paths relative to the workspace root
         workspace.root.join(input)
     };
+    
+    // Check file size and provide warnings/recommendations
+    let file_size = std::fs::metadata(&input_path)?.len();
+    const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024; // 100MB
+    const VERY_LARGE_FILE_THRESHOLD: u64 = 1024 * 1024 * 1024; // 1GB
+    
+    if file_size > VERY_LARGE_FILE_THRESHOLD && full_data {
+        println!("⚠️  WARNING: Large file detected ({:.1} GB)", file_size as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!("   Consider using --hash-only for faster processing and smaller snapshots.");
+        println!("   This will disable rollback and detailed diff capabilities.");
+    } else if file_size > LARGE_FILE_THRESHOLD && full_data {
+        println!("ℹ️  INFO: Moderate file size ({:.1} MB) - using full data storage", file_size as f64 / (1024.0 * 1024.0));
+        println!("   Use --hash-only if you need faster processing.");
+    }
+    
+    if !full_data {
+        println!("ℹ️  Using hash-only mode - rollback and detailed diff capabilities disabled");
+    }
     
     let mut creator = SnapshotCreator::new(batch_size, true);
     

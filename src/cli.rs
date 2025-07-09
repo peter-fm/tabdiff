@@ -42,9 +42,15 @@ pub enum Commands {
         #[arg(long, default_value = "10000", value_parser = validate_batch_size)]
         batch_size: usize,
         
-        /// Store full data for comprehensive change detection (larger snapshots)
-        #[arg(long)]
+        /// Store full data for comprehensive change detection (default: enabled)
+        /// Enables rollback capabilities and detailed cell-level diff analysis
+        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
         full_data: bool,
+        
+        /// Store only hashes for lightweight tracking (disables rollback and detailed diff)
+        /// Recommended for very large files (>1GB) to improve performance
+        #[arg(long, conflicts_with = "full_data")]
+        hash_only: bool,
     },
     
     /// Compare two snapshots

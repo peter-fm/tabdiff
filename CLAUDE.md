@@ -71,6 +71,28 @@ tabdiff is a Rust-based snapshot-based structured data diff tool built around th
 
 Engineers should always use `data.parquet` for row data to maintain consistency across the codebase.
 
+## Default Behavior Changes
+
+**IMPORTANT**: As of the latest version:
+
+### ✅ New Defaults (Better UX):
+- **`--full-data` is now the default** for snapshot creation
+- Users get comprehensive change detection and rollback capabilities by default
+- No need to remember to add `--full-data` flag for proper functionality
+
+### 🔄 Performance Options:
+- **`--hash-only`**: For large files (>1GB) - lightweight tracking, no rollback/detailed diff
+- **Smart warnings**: Automatic file size detection with recommendations
+  - Files >100MB: Info message about using `--hash-only` 
+  - Files >1GB: Warning with strong recommendation for `--hash-only`
+
+### 📊 File Size Thresholds:
+- **< 100MB**: Full data mode (default) - no warnings
+- **100MB - 1GB**: Info message about `--hash-only` option  
+- **> 1GB**: Warning suggesting `--hash-only` for performance
+
+This ensures users get the best experience by default while providing clear guidance for large file handling.
+
 ### Core Module Structure
 - **`lib.rs`**: Public API and constants
 - **`main.rs`**: CLI entry point 

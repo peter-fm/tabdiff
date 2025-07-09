@@ -13,7 +13,7 @@ fn test_snapshot_with_full_data_creates_valid_metadata() {
     
     // Create snapshot with full data
     runner.expect_success(&[
-        "snapshot", csv_path.to_str().unwrap(), "--name", "test_snapshot", "--full-data"
+        "snapshot", csv_path.to_str().unwrap(), "--name", "test_snapshot"
     ]);
     
     // Verify snapshot exists
@@ -38,10 +38,10 @@ fn test_diff_between_snapshots_generates_result() {
     
     // Create snapshots
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"
     ]);
     runner.expect_success(&[
-        "snapshot", modified_csv.to_str().unwrap(), "--name", "modified", "--full-data"
+        "snapshot", modified_csv.to_str().unwrap(), "--name", "modified"
     ]);
     
     // Generate diff
@@ -80,8 +80,7 @@ fn test_rollback_creates_backup() {
     
     // Create baseline snapshot
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
-    ]);
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"    ]);
     
     // Execute rollback
     runner.expect_success(&[
@@ -123,8 +122,7 @@ fn test_rollback_dry_run_does_not_modify_file() {
     
     // Create baseline snapshot
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
-    ]);
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"    ]);
     
     // Store original content
     let original_content = fs::read_to_string(&modified_csv).unwrap();
@@ -152,11 +150,9 @@ fn test_schema_changes_detected_in_diff() {
     
     // Create snapshots
     runner.expect_success(&[
-        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline", "--full-data"
-    ]);
+        "snapshot", baseline_csv.to_str().unwrap(), "--name", "baseline"    ]);
     runner.expect_success(&[
-        "snapshot", schema_changed_csv.to_str().unwrap(), "--name", "schema_changed", "--full-data"
-    ]);
+        "snapshot", schema_changed_csv.to_str().unwrap(), "--name", "schema_changed"    ]);
     
     // Generate diff
     runner.expect_success(&["diff", "baseline", "schema_changed"]);
@@ -178,7 +174,7 @@ fn test_large_dataset_processing_works() {
     
     // Should be able to create snapshot
     runner.expect_success(&[
-        "snapshot", large_csv.to_str().unwrap(), "--name", "large_baseline", "--full-data", "--batch-size", "50"
+        "snapshot", large_csv.to_str().unwrap(), "--name", "large_baseline", "--batch-size", "50"
     ]);
     
     // Verify snapshot exists
@@ -206,8 +202,7 @@ fn test_end_to_end_workflow_basic() {
     
     // Create snapshot
     runner.expect_success(&[
-        "snapshot", csv_path.to_str().unwrap(), "--name", "v1", "--full-data"
-    ]);
+        "snapshot", csv_path.to_str().unwrap(), "--name", "v1"    ]);
     
     // List snapshots
     runner.expect_success(&["list"]);
@@ -220,8 +215,7 @@ fn test_end_to_end_workflow_basic() {
     
     // Create second snapshot
     runner.expect_success(&[
-        "snapshot", updated_csv.to_str().unwrap(), "--name", "v2", "--full-data"
-    ]);
+        "snapshot", updated_csv.to_str().unwrap(), "--name", "v2"    ]);
     
     // Compare versions
     runner.expect_success(&["diff", "v1", "v2"]);

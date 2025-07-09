@@ -73,11 +73,13 @@ tabdiff init
 
 This creates a `.tabdiff/` directory in your project (similar to `.git/`).
 
-### 2. Create your first snapshot with full data
+### 2. Create your first snapshot
 
 ```bash
-tabdiff snapshot data.csv --name baseline --full-data
+tabdiff snapshot data.csv --name baseline
 ```
+
+(Full data storage is now enabled by default for comprehensive change detection)
 
 This creates:
 - `.tabdiff/baseline.tabdiff` (compressed archive with full data - Git ignored)
