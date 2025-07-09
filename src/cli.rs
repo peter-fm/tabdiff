@@ -79,9 +79,9 @@ pub enum Commands {
         #[arg(long)]
         detailed: bool,
         
-        /// Output format: "pretty", "json"
-        #[arg(long, default_value = "pretty")]
-        format: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     
     /// Check current data against a snapshot
@@ -104,9 +104,9 @@ pub enum Commands {
     
     /// List all snapshots
     List {
-        /// Output format: "pretty", "json"
-        #[arg(long, default_value = "pretty")]
-        format: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     
     /// Rollback a file to a previous snapshot state
@@ -133,9 +133,9 @@ pub enum Commands {
     
     /// Show snapshot chain and relationships
     Chain {
-        /// Output format: "pretty", "json"
-        #[arg(long, default_value = "pretty")]
-        format: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     
     /// Clean up old snapshot archives to save space
@@ -169,23 +169,6 @@ impl DiffMode {
             "detailed" => Ok(Self::Detailed),
             "auto" => Ok(Self::Auto),
             _ => Err(format!("Invalid diff mode: {}. Use 'quick', 'detailed', or 'auto'", s)),
-        }
-    }
-}
-
-/// Parse output format string
-#[derive(Debug, Clone)]
-pub enum OutputFormat {
-    Pretty,
-    Json,
-}
-
-impl OutputFormat {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "pretty" => Ok(Self::Pretty),
-            "json" => Ok(Self::Json),
-            _ => Err(format!("Invalid output format: {}. Use 'pretty' or 'json'", s)),
         }
     }
 }

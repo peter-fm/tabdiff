@@ -1,9 +1,9 @@
 //! Command implementations for tabdiff CLI
 
-use crate::cli::{Commands, DiffMode, OutputFormat};
+use crate::cli::{Commands, DiffMode};
 use crate::data::DataProcessor;
 use crate::error::Result;
-use crate::output::{OutputManager, PrettyPrinter, JsonFormatter};
+use crate::output::{PrettyPrinter, JsonFormatter};
 use crate::resolver::{SnapshotRef, SnapshotResolver};
 use crate::snapshot::{SnapshotCreator, SnapshotLoader};
 use crate::workspace::TabdiffWorkspace;
@@ -38,15 +38,15 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
         Commands::Show {
             snapshot,
             detailed,
-            format,
-        } => show_command(workspace_path, &snapshot, detailed, &format),
+            json,
+        } => show_command(workspace_path, &snapshot, detailed, json),
         Commands::Status {
             input,
             compare_to,
             quiet,
             json,
         } => status_command(workspace_path, &input, compare_to.as_deref(), quiet, json),
-        Commands::List { format } => list_command(workspace_path, &format),
+        Commands::List { json } => list_command(workspace_path, json),
         Commands::Rollback {
             input,
             to,
@@ -54,7 +54,7 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
             force,
             backup,
         } => rollback_command(workspace_path, &input, &to, dry_run, force, backup),
-        Commands::Chain { format } => chain_command(workspace_path, &format),
+        Commands::Chain { json } => chain_command(workspace_path, json),
         Commands::Cleanup {
             keep_full,
             dry_run,
@@ -605,13 +605,10 @@ fn show_command(
     workspace_path: Option<&Path>,
     snapshot: &str,
     detailed: bool,
-    format: &str,
+    json: bool,
 ) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
     let resolver = SnapshotResolver::new(workspace.clone());
-
-    let output_format = OutputFormat::parse(format)
-        .map_err(|e| crate::error::TabdiffError::invalid_input(e))?;
 
     // Resolve snapshot
     let snap_ref = SnapshotRef::from_string(snapshot.to_string());
@@ -621,26 +618,23 @@ fn show_command(
     let metadata = SnapshotLoader::load_metadata(&resolved.json_path)?;
     let metadata_json = serde_json::to_value(&metadata)?;
 
-    match output_format {
-        OutputFormat::Pretty => {
-            PrettyPrinter::print_snapshot_metadata(&metadata_json, detailed);
+    if json {
+        if detailed && resolved.has_archive() {
+            // Load full snapshot data
+            let full_data = SnapshotLoader::load_full_snapshot(resolved.require_archive()?)?;
+            let combined = serde_json::json!({
+                "metadata": metadata_json,
+                "archive_data": {
+                    "schema": full_data.schema_data,
+                    "rows": full_data.row_data
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&combined)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&metadata_json)?);
         }
-        OutputFormat::Json => {
-            if detailed && resolved.has_archive() {
-                // Load full snapshot data
-                let full_data = SnapshotLoader::load_full_snapshot(resolved.require_archive()?)?;
-                let combined = serde_json::json!({
-                    "metadata": metadata_json,
-                    "archive_data": {
-                        "schema": full_data.schema_data,
-                        "rows": full_data.row_data
-                    }
-                });
-                println!("{}", serde_json::to_string_pretty(&combined)?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&metadata_json)?);
-            }
-        }
+    } else {
+        PrettyPrinter::print_snapshot_metadata(&metadata_json, detailed);
     }
 
     Ok(())
@@ -667,7 +661,9 @@ fn status_command(
         })?
     };
 
-    println!("📊 Checking status of '{}' against snapshot '{}'...", input, comparison_snapshot.name);
+    if !json {
+        println!("📊 Checking status of '{}' against snapshot '{}'...", input, comparison_snapshot.name);
+    }
 
     // Load baseline snapshot metadata and data
     let baseline_metadata = SnapshotLoader::load_metadata(&comparison_snapshot.json_path)?;
@@ -763,90 +759,85 @@ fn status_command(
 }
 
 /// List all snapshots
-fn list_command(workspace_path: Option<&Path>, format: &str) -> Result<()> {
+fn list_command(workspace_path: Option<&Path>, json: bool) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
     let resolver = SnapshotResolver::new(workspace);
 
-    let output_format = OutputFormat::parse(format)
-        .map_err(|e| crate::error::TabdiffError::invalid_input(e))?;
-
     let snapshots = resolver.list_snapshots()?;
     
-    let output_manager = OutputManager::new(output_format);
-    output_manager.output_snapshot_list(&snapshots)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&snapshots)?);
+    } else {
+        PrettyPrinter::print_snapshot_list(&snapshots);
+    }
 
     Ok(())
 }
 
 /// Show snapshot chain and relationships
-fn chain_command(workspace_path: Option<&Path>, format: &str) -> Result<()> {
+fn chain_command(workspace_path: Option<&Path>, json: bool) -> Result<()> {
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
-    let output_format = OutputFormat::parse(format)
-        .map_err(|e| crate::error::TabdiffError::invalid_input(e))?;
 
     // Build snapshot chain
     let chain = crate::snapshot::SnapshotChain::build_chain(&workspace)?;
 
-    match output_format {
-        OutputFormat::Pretty => {
-            println!("🔗 Snapshot Chain");
-            
-            if chain.snapshots.is_empty() {
-                println!("No snapshots found.");
-                return Ok(());
-            }
-
-            // Validate chain integrity
-            let issues = chain.validate()?;
-            if !issues.is_empty() {
-                println!("⚠️  Chain validation issues:");
-                for issue in &issues {
-                    println!("   • {}", issue);
-                }
-                println!();
-            }
-
-            // Show chain structure
-            println!("Chain structure:");
-            for snapshot in &chain.snapshots {
-                let prefix = if snapshot.parent_snapshot.is_none() {
-                    "🌱"
-                } else {
-                    "├─"
-                };
-                
-                println!("{} {} (seq: {})", prefix, snapshot.name, snapshot.sequence_number);
-                
-                if let Some(parent) = &snapshot.parent_snapshot {
-                    println!("   └─ Parent: {}", parent);
-                }
-                
-                if snapshot.can_reconstruct_parent {
-                    println!("   └─ Can reconstruct parent: ✅");
-                }
-                
-                if let Some(delta) = &snapshot.delta_from_parent {
-                    println!("   └─ Delta size: {} bytes", delta.compressed_size);
-                }
-                
-                if let Some(archive_size) = snapshot.archive_size {
-                    println!("   └─ Archive size: {} bytes", archive_size);
-                }
-                
-                println!();
-            }
-
-            if let Some(head) = &chain.head {
-                println!("Head: {}", head);
-            }
+    if json {
+        let chain_json = serde_json::json!({
+            "snapshots": chain.snapshots,
+            "head": chain.head,
+            "validation_issues": chain.validate()?
+        });
+        println!("{}", serde_json::to_string_pretty(&chain_json)?);
+    } else {
+        println!("🔗 Snapshot Chain");
+        
+        if chain.snapshots.is_empty() {
+            println!("No snapshots found.");
+            return Ok(());
         }
-        OutputFormat::Json => {
-            let chain_json = serde_json::json!({
-                "snapshots": chain.snapshots,
-                "head": chain.head,
-                "validation_issues": chain.validate()?
-            });
-            println!("{}", serde_json::to_string_pretty(&chain_json)?);
+
+        // Validate chain integrity
+        let issues = chain.validate()?;
+        if !issues.is_empty() {
+            println!("⚠️  Chain validation issues:");
+            for issue in &issues {
+                println!("   • {}", issue);
+            }
+            println!();
+        }
+
+        // Show chain structure
+        println!("Chain structure:");
+        for snapshot in &chain.snapshots {
+            let prefix = if snapshot.parent_snapshot.is_none() {
+                "🌱"
+            } else {
+                "├─"
+            };
+            
+            println!("{} {} (seq: {})", prefix, snapshot.name, snapshot.sequence_number);
+            
+            if let Some(parent) = &snapshot.parent_snapshot {
+                println!("   └─ Parent: {}", parent);
+            }
+            
+            if snapshot.can_reconstruct_parent {
+                println!("   └─ Can reconstruct parent: ✅");
+            }
+            
+            if let Some(delta) = &snapshot.delta_from_parent {
+                println!("   └─ Delta size: {} bytes", delta.compressed_size);
+            }
+            
+            if let Some(archive_size) = snapshot.archive_size {
+                println!("   └─ Archive size: {} bytes", archive_size);
+            }
+            
+            println!();
+        }
+
+        if let Some(head) = &chain.head {
+            println!("Head: {}", head);
         }
     }
 

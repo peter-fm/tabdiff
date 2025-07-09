@@ -10,11 +10,14 @@
 - **Compressed archives** for full snapshot data (DVC-compatible)
 - **Schema, column, and row-level diffing**
 - **Progress reporting** for long-running operations
-- **🆕 Comprehensive change detection** with before/after values
+- **🆕 Comprehensive change detection** with before/after values (default)
 - **🆕 Rollback functionality** to restore files to previous states
 - **🆕 Detailed change analysis** with cell-level precision
 - **🆕 Enhanced snapshot caching** with delta chains for space efficiency
 - **🆕 Smart cleanup system** to manage storage while preserving rollback capability
+- **🆕 Intelligent file size warnings** for optimal performance recommendations
+
+> **New in v0.2.0**: Full data storage is now the default! This enables comprehensive change detection and rollback functionality out of the box. Use `--hash-only` for large files when you only need basic change detection.
 
 ## 📦 Installation
 
@@ -126,16 +129,21 @@ tabdiff snapshot <input> --name <snapshot_name> [options]
 
 **Options:**
 - `--batch-size <size>`: Processing batch size (default: 10000)
-- `--full-data`: Store complete row data for comprehensive change detection
+- `--hash-only`: Store only hashes for lightweight tracking (disables rollback and detailed diff)
 
 **Examples:**
 ```bash
-# Full snapshot with comprehensive change detection
-tabdiff snapshot data.csv --name v1 --full-data
-
-# Hash-only snapshot (smaller, basic change detection)
+# Full snapshot with comprehensive change detection (default)
 tabdiff snapshot data.csv --name v1
+
+# Hash-only snapshot for large files (smaller, basic change detection)
+tabdiff snapshot data.csv --name v1 --hash-only
 ```
+
+**Smart File Size Warnings:**
+- Files > 100MB: Suggests considering `--hash-only` for performance
+- Files > 1GB: Strongly recommends `--hash-only` to avoid memory issues
+- Automatic recommendations help balance functionality with performance
 
 ### `tabdiff diff`
 Compare two snapshots.
@@ -461,7 +469,6 @@ git commit -m "Track tabdiff archives with DVC"
 name.tabdiff (tar.zst):
 ├── metadata.json      # Extended metadata with chain info
 ├── schema.json        # Schema + column hashes  
-├── rows.json          # Row hashes only
 ├── data.parquet       # Full dataset (removable during cleanup)
 └── delta.parquet      # Changes from parent (always preserved)
 ```
@@ -495,8 +502,8 @@ name.tabdiff (tar.zst):
 cd my-data-project/
 tabdiff init
 
-# Create baseline snapshot with full data
-tabdiff snapshot data.csv --name baseline --full-data
+# Create baseline snapshot with full data (default)
+tabdiff snapshot data.csv --name baseline
 
 # Work with your data...
 # Check what changed
@@ -514,7 +521,7 @@ tabdiff rollback data.csv --to baseline
 
 ```bash
 # Create snapshot before data processing
-tabdiff snapshot raw_data.csv --name before_cleaning --full-data
+tabdiff snapshot raw_data.csv --name before_cleaning
 
 # Process your data...
 python clean_data.py
@@ -526,7 +533,7 @@ tabdiff status clean_data.csv --compare-to before_cleaning --json > changes.json
 cat changes.json | jq '.row_changes.modified | length'
 
 # Create snapshot of cleaned data
-tabdiff snapshot clean_data.csv --name after_cleaning --full-data
+tabdiff snapshot clean_data.csv --name after_cleaning
 ```
 
 ### CI/CD Integration with Rollback
@@ -555,24 +562,36 @@ fi
 
 ```bash
 # For large datasets, tabdiff processes all data for reliable results
-tabdiff snapshot large_data.parquet --name v1 --full-data
+tabdiff snapshot large_data.parquet --name v1
 
-# Status check processes all data for accurate comparison
-tabdiff status large_data.parquet
+# For very large datasets, use hash-only mode for performance
+tabdiff snapshot large_data.parquet --name v1 --hash-only
 
 # Use batch processing for performance optimization
-tabdiff snapshot large_data.parquet --name v1 --batch-size 50000 --full-data
+tabdiff snapshot large_data.parquet --name v1 --batch-size 50000
+```
+
+**Automatic File Size Warnings:**
+```bash
+# When processing large files, tabdiff provides helpful warnings:
+$ tabdiff snapshot large_file.csv --name v1
+⚠️  WARNING: Large file detected (150.2 MB)
+   Consider using --hash-only for faster processing and smaller snapshots.
+
+$ tabdiff snapshot huge_file.csv --name v1
+⚠️  WARNING: Very large file detected (1.2 GB)
+   Strongly recommend using --hash-only to avoid memory issues.
 ```
 
 ### Enhanced Snapshot Caching Workflow 🆕
 
 ```bash
 # Create a series of snapshots with delta chains
-tabdiff snapshot employees.csv --name baseline --full-data
+tabdiff snapshot employees.csv --name baseline
 # Edit data: Alice gets raise, add Bob
-tabdiff snapshot employees.csv --name v2 --full-data  
+tabdiff snapshot employees.csv --name v2  
 # Edit data: Bob gets raise, add Carol
-tabdiff snapshot employees.csv --name v3 --full-data
+tabdiff snapshot employees.csv --name v3
 
 # View the snapshot chain
 tabdiff chain

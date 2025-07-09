@@ -1,6 +1,5 @@
 //! Output formatting utilities
 
-use crate::cli::OutputFormat;
 use crate::error::Result;
 use crate::hash::RowHashComparison;
 use crate::workspace::WorkspaceStats;
@@ -321,58 +320,6 @@ impl JsonFormatter {
         changes: &ChangeDetectionResult,
     ) -> Result<String> {
         Ok(serde_json::to_string_pretty(changes)?)
-    }
-}
-
-/// Output manager that handles different formats
-pub struct OutputManager {
-    format: OutputFormat,
-}
-
-impl OutputManager {
-    pub fn new(format: OutputFormat) -> Self {
-        Self { format }
-    }
-
-    /// Output data in the configured format
-    pub fn output<T: serde::Serialize>(&self, data: &T) -> Result<()> {
-        match self.format {
-            OutputFormat::Json => {
-                println!("{}", JsonFormatter::format(data)?);
-            }
-            OutputFormat::Pretty => {
-                // For pretty format, we need specific handling per data type
-                // This is a fallback to JSON for unknown types
-                println!("{}", JsonFormatter::format(data)?);
-            }
-        }
-        Ok(())
-    }
-
-    /// Output workspace stats
-    pub fn output_workspace_stats(&self, stats: &WorkspaceStats) -> Result<()> {
-        match self.format {
-            OutputFormat::Json => {
-                println!("{}", JsonFormatter::format_workspace_stats(stats)?);
-            }
-            OutputFormat::Pretty => {
-                PrettyPrinter::print_workspace_stats(stats);
-            }
-        }
-        Ok(())
-    }
-
-    /// Output snapshot list
-    pub fn output_snapshot_list(&self, snapshots: &[String]) -> Result<()> {
-        match self.format {
-            OutputFormat::Json => {
-                println!("{}", JsonFormatter::format(snapshots)?);
-            }
-            OutputFormat::Pretty => {
-                PrettyPrinter::print_snapshot_list(snapshots);
-            }
-        }
-        Ok(())
     }
 }
 
