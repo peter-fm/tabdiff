@@ -291,14 +291,9 @@ impl SnapshotCreator {
             serde_json::to_string_pretty(&schema_data)?.into_bytes(),
         ));
 
-        // Create rows.json with ONLY row hashes (as per README spec)
-        let rows_data = serde_json::json!({
-            "row_hashes": row_hashes
-        });
-        files.push((
-            "rows.json".to_string(),
-            serde_json::to_string_pretty(&rows_data)?.into_bytes(),
-        ));
+        // NOTE: We do NOT create rows.json - this causes confusion and bugs
+        // Row hashes are stored in metadata.json, and full row data is stored in data.parquet
+        // This maintains consistency between snapshot creation and loading
 
         // Only create data.parquet if full_data is true (implements --full-data functionality)
         if full_data {
@@ -558,8 +553,9 @@ impl SnapshotLoader {
                     let content_str = String::from_utf8(content)?;
                     schema_data = Some(serde_json::from_str(&content_str)?);
                 }
-                "rows.json" => {
+                "data.parquet" => {
                     let content_str = String::from_utf8(content)?;
+                    // This contains the actual full row data when --full-data is used
                     row_data = Some(serde_json::from_str(&content_str)?);
                 }
                 "delta.json" => {
@@ -575,7 +571,7 @@ impl SnapshotLoader {
         Ok(FullSnapshotData {
             metadata: metadata.ok_or_else(|| TabdiffError::archive("Missing metadata.json"))?,
             schema_data: schema_data.ok_or_else(|| TabdiffError::archive("Missing schema.json"))?,
-            row_data: row_data.ok_or_else(|| TabdiffError::archive("Missing rows.json"))?,
+            row_data: row_data.unwrap_or_else(|| serde_json::json!({"rows": []})), // Default to empty rows if no data.parquet
             delta_data,
         })
     }

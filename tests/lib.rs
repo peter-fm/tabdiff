@@ -24,8 +24,8 @@ pub mod edge_cases {
 
 // Functional tests
 pub mod functional {
-    pub mod workflow_tests;
-    pub mod table_changes_tests;
+    pub mod basic_functionality_tests;
+    pub mod core_validation_tests;
 }
 
 // Re-export common utilities for easy access

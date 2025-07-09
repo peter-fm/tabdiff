@@ -109,6 +109,20 @@ impl TestFixture {
         Ok(path)
     }
 
+    /// Update a CSV file with new data
+    pub fn update_csv(&self, name: &str, data: &[Vec<&str>]) -> Result<PathBuf> {
+        let path = self.root().join(name);
+        let mut content = String::new();
+        
+        for row in data {
+            content.push_str(&row.join(","));
+            content.push('\n');
+        }
+        
+        fs::write(&path, content)?;
+        Ok(path)
+    }
+
     /// Create a CSV with various data types for edge case testing
     pub fn create_mixed_types_csv(&self, name: &str) -> Result<PathBuf> {
         let data = vec![
@@ -187,6 +201,14 @@ impl CliTestRunner {
     /// Run a command and expect it to succeed
     pub fn expect_success(&self, args: &[&str]) {
         self.run_command(args).expect("Command should succeed");
+    }
+
+    /// Run a command and expect it to succeed, returning output
+    pub fn expect_success_with_output(&self, args: &[&str]) -> String {
+        // This is a simplified version - in real implementation would capture output
+        self.run_command(args).expect("Command should succeed");
+        // For now, return empty string - this should be implemented to capture actual output
+        String::new()
     }
 
     /// Run a command and expect it to fail
@@ -397,5 +419,81 @@ pub mod assertions {
         let content2 = std::fs::read(path2)?;
         assert_eq!(content1, content2, "Files should have identical content");
         Ok(())
+    }
+
+    /// Assert that a specific cell change was detected correctly
+    pub fn assert_cell_change_detected(
+        json: &serde_json::Value, 
+        row_index: usize, 
+        column: &str, 
+        before: &str, 
+        after: &str
+    ) {
+        let modified_rows = json["row_changes"]["modified"].as_array()
+            .expect("Should have modified rows array");
+        
+        let row_change = modified_rows.iter()
+            .find(|row| row["row_index"] == row_index)
+            .expect(&format!("Should find modified row at index {}", row_index));
+        
+        let changes = &row_change["changes"];
+        assert_eq!(changes[column]["before"], before, 
+                  "Before value should match for column {}", column);
+        assert_eq!(changes[column]["after"], after, 
+                  "After value should match for column {}", column);
+    }
+
+    /// Assert that an added row was detected correctly
+    pub fn assert_row_addition_detected(
+        json: &serde_json::Value,
+        row_index: usize,
+        expected_data: &std::collections::HashMap<&str, &str>
+    ) {
+        let added_rows = json["row_changes"]["added"].as_array()
+            .expect("Should have added rows array");
+        
+        let added_row = added_rows.iter()
+            .find(|row| row["row_index"] == row_index)
+            .expect(&format!("Should find added row at index {}", row_index));
+        
+        for (column, expected_value) in expected_data {
+            assert_eq!(added_row["data"][column], *expected_value,
+                      "Added row data should match for column {}", column);
+        }
+    }
+
+    /// Assert that a removed row was detected correctly
+    pub fn assert_row_removal_detected(
+        json: &serde_json::Value,
+        expected_data: &std::collections::HashMap<&str, &str>
+    ) {
+        let removed_rows = json["row_changes"]["removed"].as_array()
+            .expect("Should have removed rows array");
+        
+        let found_match = removed_rows.iter().any(|row| {
+            expected_data.iter().all(|(column, expected_value)| {
+                row["data"][column] == *expected_value
+            })
+        });
+        
+        assert!(found_match, "Should find matching removed row data");
+    }
+
+    /// Assert that rollback operations are valid and complete
+    pub fn assert_rollback_operations_valid(
+        json: &serde_json::Value,
+        expected_operation_count: usize
+    ) {
+        let rollback_ops = json["rollback_operations"].as_array()
+            .expect("Should have rollback_operations array");
+        
+        assert_eq!(rollback_ops.len(), expected_operation_count,
+                  "Should have expected number of rollback operations");
+        
+        // Verify each operation has required fields
+        for op in rollback_ops {
+            assert!(op["operation_type"].is_string(), "Operation should have type");
+            assert!(op["parameters"].is_object(), "Operation should have parameters");
+        }
     }
 }

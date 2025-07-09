@@ -349,50 +349,196 @@ fn diff_command(
 
     println!("🔍 Comparing snapshots: {} → {}", resolved1.name, resolved2.name);
 
-    // Load metadata for quick comparison
-    let metadata1 = SnapshotLoader::load_metadata(&resolved1.json_path)?;
+    // Load metadata for output formatting
     let metadata2 = SnapshotLoader::load_metadata(&resolved2.json_path)?;
 
-    // Simple diff implementation
-    let schema_changed = metadata1.schema_hash != metadata2.schema_hash;
+    // Load full snapshot data for comprehensive comparison
+    let snapshot1_data = if resolved1.has_archive() {
+        SnapshotLoader::load_full_snapshot(resolved1.require_archive()?)?
+    } else {
+        return Err(crate::error::TabdiffError::archive("Baseline snapshot has no archive data"));
+    };
+    
+    let snapshot2_data = if resolved2.has_archive() {
+        SnapshotLoader::load_full_snapshot(resolved2.require_archive()?)?
+    } else {
+        return Err(crate::error::TabdiffError::archive("Comparison snapshot has no archive data"));
+    };
+    
+    // Extract baseline schema from archive data
+    let baseline_schema = if let Some(schema_data) = snapshot1_data.schema_data.get("columns") {
+        if let Some(columns_array) = schema_data.as_array() {
+            let mut baseline_columns = Vec::new();
+            for col_value in columns_array {
+                if let (Some(name), Some(data_type), Some(nullable)) = (
+                    col_value.get("name").and_then(|v| v.as_str()),
+                    col_value.get("data_type").and_then(|v| v.as_str()),
+                    col_value.get("nullable").and_then(|v| v.as_bool())
+                ) {
+                    baseline_columns.push(crate::hash::ColumnInfo {
+                        name: name.to_string(),
+                        data_type: data_type.to_string(),
+                        nullable,
+                    });
+                }
+            }
+            baseline_columns
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+    
+    // Extract current schema from archive data
+    let current_schema = if let Some(schema_data) = snapshot2_data.schema_data.get("columns") {
+        if let Some(columns_array) = schema_data.as_array() {
+            let mut current_columns = Vec::new();
+            for col_value in columns_array {
+                if let (Some(name), Some(data_type), Some(nullable)) = (
+                    col_value.get("name").and_then(|v| v.as_str()),
+                    col_value.get("data_type").and_then(|v| v.as_str()),
+                    col_value.get("nullable").and_then(|v| v.as_bool())
+                ) {
+                    current_columns.push(crate::hash::ColumnInfo {
+                        name: name.to_string(),
+                        data_type: data_type.to_string(),
+                        nullable,
+                    });
+                }
+            }
+            current_columns
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Extract baseline row data from archive
+    let baseline_rows = if let Some(rows_data) = snapshot1_data.row_data.get("rows") {
+        if let Some(rows_array) = rows_data.as_array() {
+            let mut baseline_rows = Vec::new();
+            for row_value in rows_array {
+                if let Some(row_array) = row_value.as_array() {
+                    let row: Vec<String> = row_array
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect();
+                    baseline_rows.push(row);
+                }
+            }
+            baseline_rows
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Extract current row data from archive
+    let current_rows = if let Some(rows_data) = snapshot2_data.row_data.get("rows") {
+        if let Some(rows_array) = rows_data.as_array() {
+            let mut current_rows = Vec::new();
+            for row_value in rows_array {
+                if let Some(row_array) = row_value.as_array() {
+                    let row: Vec<String> = row_array
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect();
+                    current_rows.push(row);
+                }
+            }
+            current_rows
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+    
+    // Use comprehensive change detection
+    let changes = crate::change_detection::ChangeDetector::detect_changes(
+        &baseline_schema,
+        &baseline_rows,
+        &current_schema,
+        &current_rows,
+    )?;
+    
+    // Build comprehensive diff result
+    let schema_changed = !changes.schema_changes.columns_added.is_empty() ||
+                        !changes.schema_changes.columns_removed.is_empty() ||
+                        !changes.schema_changes.columns_renamed.is_empty() ||
+                        !changes.schema_changes.type_changes.is_empty() ||
+                        changes.schema_changes.column_order.is_some();
     let mut columns_changed = Vec::new();
     
-    // Create maps for easier comparison
-    let metadata1_map: std::collections::HashMap<String, String> = metadata1.columns
-        .iter()
-        .map(|col| (col.name.clone(), format!("{}:{}", col.data_type, col.nullable)))
-        .collect();
+    // Process schema changes
+    for col_add in &changes.schema_changes.columns_added {
+        columns_changed.push(format!("  {} (added)", col_add.name));
+    }
+    for col_rem in &changes.schema_changes.columns_removed {
+        columns_changed.push(format!("  {} (removed)", col_rem.name));
+    }
+    for col_rename in &changes.schema_changes.columns_renamed {
+        columns_changed.push(format!("  {} → {} (renamed)", col_rename.from, col_rename.to));
+    }
+    for type_change in &changes.schema_changes.type_changes {
+        columns_changed.push(format!("  {} (type changed: {} → {})", 
+            type_change.column, type_change.from, type_change.to));
+    }
     
-    let metadata2_map: std::collections::HashMap<String, String> = metadata2.columns
-        .iter()
-        .map(|col| (col.name.clone(), format!("{}:{}", col.data_type, col.nullable)))
-        .collect();
-
-    for (col_name, type_info1) in &metadata1_map {
-        if let Some(type_info2) = metadata2_map.get(col_name) {
-            if type_info1 != type_info2 {
-                columns_changed.push(format!("  {} (type/nullable changed)", col_name));
-            }
-        } else {
-            columns_changed.push(format!("  {} (removed)", col_name));
-        }
+    // Count row changes
+    let rows_changed = changes.row_changes.modified.len() + 
+                      changes.row_changes.added.len() + 
+                      changes.row_changes.removed.len();
+    
+    // Build sample changes for display
+    let mut sample_changes = Vec::new();
+    
+    // Add sample modifications
+    for (idx, modification) in changes.row_changes.modified.iter().enumerate() {
+        if idx >= 5 { break; } // Limit to 5 samples
+        sample_changes.push(serde_json::json!({
+            "type": "modified",
+            "row_index": modification.row_index,
+            "changes": modification.changes
+        }));
+    }
+    
+    // Add sample additions
+    for (idx, addition) in changes.row_changes.added.iter().enumerate() {
+        if idx >= 5 || sample_changes.len() >= 5 { break; }
+        sample_changes.push(serde_json::json!({
+            "type": "added",
+            "row_index": addition.row_index,
+            "data": addition.data
+        }));
+    }
+    
+    // Add sample removals
+    for (idx, removal) in changes.row_changes.removed.iter().enumerate() {
+        if idx >= 5 || sample_changes.len() >= 5 { break; }
+        sample_changes.push(serde_json::json!({
+            "type": "removed",
+            "data": removal.data
+        }));
     }
 
-    for col_name in metadata2_map.keys() {
-        if !metadata1_map.contains_key(col_name) {
-            columns_changed.push(format!("  {} (added)", col_name));
-        }
-    }
-
-    // Create diff result
+    // Create comprehensive diff result
     let diff_result = serde_json::json!({
         "base": resolved1.name,
         "compare": resolved2.name,
         "schema_changed": schema_changed,
         "columns_changed": columns_changed,
         "row_count": metadata2.row_count,
-        "rows_changed": 0, // Would need full comparison for this
-        "sample_changes": []
+        "rows_changed": rows_changed,
+        "sample_changes": sample_changes,
+        "row_changes": {
+            "modified": changes.row_changes.modified.len(),
+            "added": changes.row_changes.added.len(),
+            "removed": changes.row_changes.removed.len()
+        }
     });
 
     // Output results
