@@ -21,9 +21,57 @@
 
 ## 📦 Installation
 
-### Quick Start
+### 🚀 Quick Install (Recommended)
 
-#### Option 1: System DuckDB (Default)
+#### Pre-built Binaries
+Download the latest release for your platform:
+
+**Windows (x64):**
+```bash
+# Download from GitHub releases
+curl -L -o tabdiff.exe "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-windows-x64.exe"
+```
+
+**macOS:**
+```bash
+# Intel Macs
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-x64"
+chmod +x tabdiff
+
+# Apple Silicon Macs
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-arm64"
+chmod +x tabdiff
+```
+
+**Linux:**
+```bash
+# x86_64
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-x64"
+chmod +x tabdiff
+
+# ARM64
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-arm64"
+chmod +x tabdiff
+```
+
+**Manual Download:**
+Visit the [releases page](https://github.com/peter-fm/tabdiff/releases) and download the appropriate binary for your platform.
+
+### 🔧 Build from Source
+
+#### Option 1: Install Directly from GitHub (Easiest)
+```bash
+cargo install --git https://github.com/peter-fm/tabdiff.git --features bundled
+```
+
+#### Option 2: Clone and Install
+```bash
+git clone https://github.com/peter-fm/tabdiff.git
+cd tabdiff
+cargo install --path . --features bundled
+```
+
+#### Option 3: System DuckDB (Advanced)
 
 **Prerequisites:**
 - **macOS**: `brew install duckdb`
@@ -32,14 +80,16 @@
 - **Windows**: Download from [duckdb.org](https://duckdb.org/docs/installation/)
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/peter-fm/tabdiff.git
 cd tabdiff
 cargo build --release
 ./target/release/tabdiff --help
 ```
 
-#### Option 2: Bundled DuckDB (Zero Dependencies)
+#### Option 4: Bundled DuckDB (Zero Dependencies)
 ```bash
+git clone https://github.com/peter-fm/tabdiff.git
+cd tabdiff
 cargo build --release --features bundled
 ```
 - ✅ Zero configuration required
@@ -47,23 +97,17 @@ cargo build --release --features bundled
 - ✅ No external dependencies
 - ⚠️ Larger binary size (~50MB)
 
-#### Option 3: Custom DuckDB Path
-```bash
-export DUCKDB_LIB_PATH=/custom/path/to/duckdb/lib
-cargo build --release
-```
-
 ### Installation Verification
 
 Test your installation:
 ```bash
-./target/release/tabdiff --version
-./target/release/tabdiff init
+tabdiff --version
+tabdiff init
 ```
 
 If you encounter issues, run with verbose logging:
 ```bash
-./target/release/tabdiff --verbose init
+tabdiff --verbose init
 ```
 
 ## 🎯 Quick Start
