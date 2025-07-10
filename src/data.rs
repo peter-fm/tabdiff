@@ -184,7 +184,7 @@ impl DataProcessor {
         
         // Get column information by creating a temporary view with LIMIT 0
         let temp_view_sql = format!(
-            "CREATE OR REPLACE VIEW temp_schema_view AS SELECT * FROM ({}) LIMIT 0",
+            "CREATE OR REPLACE VIEW temp_schema_view AS SELECT * FROM ({}) AS query_result LIMIT 0",
             select_query.trim()
         );
         
