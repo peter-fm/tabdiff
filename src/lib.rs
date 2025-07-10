@@ -17,6 +17,7 @@ pub mod output;
 pub mod progress;
 pub mod git;
 pub mod change_detection;
+pub mod sql;
 
 pub use error::{Result, TabdiffError};
 pub use workspace::TabdiffWorkspace;

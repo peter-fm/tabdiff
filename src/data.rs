@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 use crate::hash::ColumnInfo;
+use crate::sql;
 use blake3;
 use duckdb::Connection;
 use std::collections::HashMap;
@@ -40,6 +41,11 @@ impl DataProcessor {
 
     /// Load data from file and return basic info
     pub fn load_file(&mut self, file_path: &Path) -> Result<DataInfo> {
+        // Check if this is a SQL file
+        if sql::is_sql_file(file_path) {
+            return self.load_sql_file(file_path);
+        }
+        
         // Validate file exists and is readable
         if !file_path.exists() {
             return Err(crate::error::TabdiffError::invalid_input(
@@ -63,6 +69,113 @@ impl DataProcessor {
         
         self.connection.execute(&create_view_sql, [])
             .map_err(|e| self.convert_duckdb_error(e, file_path))?;
+        
+        // Get row count with error handling
+        let row_count: u64 = self.connection
+            .prepare("SELECT COUNT(*) FROM data_view")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare row count query: {}", e)
+            ))?
+            .query_row([], |row| row.get(0))
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to get row count: {}", e)
+            ))?;
+        
+        // Get column information
+        let columns = self.get_column_info()?;
+        
+        Ok(DataInfo {
+            source: file_path.to_path_buf(),
+            row_count,
+            columns,
+        })
+    }
+
+    /// Load data from SQL file with database connection
+    pub fn load_sql_file(&mut self, file_path: &Path) -> Result<DataInfo> {
+        // Load environment variables
+        sql::load_env_file()?;
+        
+        // Parse the SQL file
+        let sql_file = sql::parse_sql_file(file_path)?;
+        
+        // Substitute environment variables in the connection string
+        let connection_string = sql::substitute_env_vars(&sql_file.connection_string)?;
+        
+        // Execute the connection string to attach the database (if provided)
+        if !connection_string.is_empty() {
+            self.connection.execute(&connection_string, [])
+                .map_err(|e| crate::error::TabdiffError::data_processing(
+                    format!("Failed to execute connection string '{}': {}", connection_string, e)
+                ))?;
+        }
+        
+        // Parse the content again to get setup statements and the SELECT query
+        let content = std::fs::read_to_string(file_path)
+            .map_err(|e| crate::error::TabdiffError::invalid_input(
+                format!("Failed to read SQL file '{}': {}", file_path.display(), e)
+            ))?;
+        
+        // Split by semicolons to get individual statements
+        let statements: Vec<&str> = content.split(';').collect();
+        let mut setup_statements = Vec::new();
+        let mut select_query = String::new();
+        
+        for statement in statements {
+            let trimmed = statement.trim();
+            
+            // Skip empty statements
+            if trimmed.is_empty() {
+                continue;
+            }
+            
+            // Remove any comment lines from the statement
+            let cleaned_statement = trimmed.lines()
+                .filter(|line| !line.trim().starts_with("--") && !line.trim().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+            
+            if cleaned_statement.is_empty() {
+                continue;
+            }
+            
+            // Check if this is a standalone SELECT query (not part of CREATE TABLE AS)
+            if cleaned_statement.to_uppercase().starts_with("SELECT") && 
+               !cleaned_statement.to_uppercase().contains("CREATE TABLE") {
+                select_query = cleaned_statement;
+            } else {
+                setup_statements.push(cleaned_statement);
+            }
+        }
+        
+        // Execute setup statements first
+        for statement in setup_statements {
+            if !statement.is_empty() {
+                self.connection.execute(&statement, [])
+                    .map_err(|e| crate::error::TabdiffError::data_processing(
+                        format!("Failed to execute setup statement '{}': {}", statement, e)
+                    ))?;
+            }
+        }
+        
+        // Create a view using only the SELECT query
+        if select_query.trim().is_empty() {
+            return Err(crate::error::TabdiffError::invalid_input(
+                format!("No SELECT query found in SQL file '{}'", file_path.display())
+            ));
+        }
+        
+        let create_view_sql = format!(
+            "CREATE OR REPLACE VIEW data_view AS {}",
+            select_query.trim()
+        );
+        
+        self.connection.execute(&create_view_sql, [])
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to create view from SELECT query: {}", e)
+            ))?;
         
         // Get row count with error handling
         let row_count: u64 = self.connection
@@ -508,7 +621,7 @@ impl DataProcessor {
     pub fn is_supported_format(file_path: &Path) -> bool {
         if let Some(extension) = file_path.extension().and_then(|s| s.to_str()) {
             matches!(extension.to_lowercase().as_str(), 
-                     "csv" | "parquet" | "json" | "jsonl" | "tsv")
+                     "csv" | "parquet" | "json" | "jsonl" | "tsv" | "sql")
         } else {
             false
         }
@@ -551,6 +664,7 @@ mod tests {
         assert!(DataProcessor::is_supported_format(Path::new("test.csv")));
         assert!(DataProcessor::is_supported_format(Path::new("test.parquet")));
         assert!(DataProcessor::is_supported_format(Path::new("test.json")));
+        assert!(DataProcessor::is_supported_format(Path::new("test.sql")));
         assert!(!DataProcessor::is_supported_format(Path::new("test.txt")));
         assert!(!DataProcessor::is_supported_format(Path::new("test")));
     }

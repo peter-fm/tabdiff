@@ -177,7 +177,50 @@ The test suite is focused on validating core functionality with accurate asserti
 ## Development Notes
 
 ### File Format Support
-Supports CSV, Parquet, JSON, TSV through DuckDB's SQL interface.
+Supports CSV, Parquet, JSON, TSV, and SQL files through DuckDB's SQL interface.
+
+### SQL Database Support
+tabdiff now supports tracking changes in SQL database query results through `.sql` files:
+
+#### SQL File Format
+SQL files should contain:
+1. **Connection String Comment**: A comment line with DuckDB ATTACH statement
+2. **SQL Query**: The actual query to execute
+
+Example:
+```sql
+-- ATTACH 'host=localhost user={MYSQL_USER} password={MYSQL_PASSWORD} port=3306 database=mydatabase' AS mysql_db (TYPE mysql);
+SELECT 
+    product_id,
+    product_name,
+    quantity,
+    last_updated
+FROM products 
+WHERE last_updated > '2025-01-01';
+```
+
+#### Environment Variables
+- Create a `.env` file in your project root for database credentials
+- Use `{VARIABLE_NAME}` syntax in connection strings for substitution
+- See `.env.sample` for examples
+
+#### Supported Databases
+- **MySQL**: `TYPE mysql`
+- **PostgreSQL**: `TYPE postgres`
+- **SQLite**: `TYPE sqlite`
+- Any database supported by DuckDB
+
+#### Usage
+```bash
+# Create snapshot from SQL query
+tabdiff snapshot query.sql --name baseline
+
+# Track changes over time
+tabdiff snapshot query.sql --name current
+tabdiff diff baseline current
+
+# Rollback is not supported for SQL queries (read-only)
+```
 
 ### Memory Management
 Uses chunked processing with configurable batch sizes (default: 10,000 rows) for large datasets.
