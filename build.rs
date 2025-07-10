@@ -7,6 +7,12 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     
+    // Skip DuckDB library detection if bundled feature is enabled
+    if cfg!(feature = "bundled") {
+        println!("cargo:warning=Using bundled DuckDB - skipping system library detection");
+        return;
+    }
+    
     // Try to find DuckDB library for linking
     if let Some(lib_path) = find_duckdb_library() {
         println!("cargo:rustc-link-search=native={}", lib_path.display());
