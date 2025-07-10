@@ -222,8 +222,28 @@ tabdiff diff baseline current
 # Rollback is not supported for SQL queries (read-only)
 ```
 
+#### Streaming for Large Datasets
+For large database queries, tabdiff automatically uses streaming/chunking to handle massive datasets efficiently:
+
+- **Automatic detection**: Large result sets are automatically streamed in chunks
+- **Memory efficient**: No need to load entire result set into memory
+- **Progress reporting**: Real-time progress updates for long-running queries
+- **Transparent to user**: Write simple `SELECT * FROM table` queries - streaming happens automatically
+- **Optimized chunk sizes**: 
+  - Small datasets (< 100K rows): 10K row chunks
+  - Medium datasets (100K - 1M rows): 25K row chunks  
+  - Large datasets (1M - 10M rows): 50K row chunks
+  - Very large datasets (> 10M rows): 100K row chunks
+
+#### Supported SQL Features
+- **Standard SELECT queries**: `SELECT * FROM table WHERE condition`
+- **Common Table Expressions (CTEs)**: `WITH cte AS (...) SELECT ...`
+- **JOINs and aggregations**: Complex multi-table queries
+- **Window functions**: `ROW_NUMBER() OVER (...)`, etc.
+- **All DuckDB SQL syntax**: Full SQL feature support through DuckDB
+
 ### Memory Management
-Uses chunked processing with configurable batch sizes (default: 10,000 rows) for large datasets.
+Uses intelligent chunked processing with adaptive batch sizes for optimal performance across different dataset sizes.
 
 ### Error Handling
 Uses `anyhow` for error propagation and `thiserror` for custom error types.

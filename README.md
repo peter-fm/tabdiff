@@ -5,17 +5,19 @@
 ## 🚀 Features
 
 - **Fast and memory-efficient** data processing using DuckDB
-- **Multiple file format support**: CSV, Parquet, JSON, TSV
+- **Multiple file format support**: CSV, Parquet, JSON, TSV, SQL queries
 - **Git-friendly workflow** with lightweight JSON summaries
 - **Compressed archives** for full snapshot data (DVC-compatible)
 - **Schema, column, and row-level diffing**
 - **Progress reporting** for long-running operations
-- **🆕 Comprehensive change detection** with before/after values (default)
-- **🆕 Rollback functionality** to restore files to previous states
-- **🆕 Detailed change analysis** with cell-level precision
-- **🆕 Enhanced snapshot caching** with delta chains for space efficiency
-- **🆕 Smart cleanup system** to manage storage while preserving rollback capability
-- **🆕 Intelligent file size warnings** for optimal performance recommendations
+- **Comprehensive change detection** with before/after values (default)
+- **Rollback functionality** to restore files to previous states
+- **Detailed change analysis** with cell-level precision
+- **Enhanced snapshot caching** with delta chains for space efficiency
+- **Smart cleanup system** to manage storage while preserving rollback capability
+- **Intelligent file size warnings** for optimal performance recommendations
+- **SQL database support** with automatic streaming for large result sets
+- **Environment variable support** for secure database credentials
 
 > **New in v0.2.0**: Full data storage is now the default! This enables comprehensive change detection and rollback functionality out of the box. Use `--hash-only` for large files when you only need basic change detection.
 
@@ -123,7 +125,11 @@ This creates a `.tabdiff/` directory in your project (similar to `.git/`).
 ### 2. Create your first snapshot
 
 ```bash
+# Traditional file
 tabdiff snapshot data.csv --name baseline
+
+# SQL database query
+tabdiff snapshot query.sql --name baseline
 ```
 
 (Full data storage is now enabled by default for comprehensive change detection)
@@ -135,8 +141,9 @@ This creates:
 ### 3. Make changes to your data and check status
 
 ```bash
-# Edit your data file...
+# Edit your data file or modify database...
 tabdiff status data.csv --compare-to baseline
+tabdiff status query.sql --compare-to baseline
 ```
 
 ### 4. See detailed changes with before/after values
@@ -419,6 +426,160 @@ tabdiff cleanup --force
    • baseline (seq: 0, estimated savings: 779 bytes)
 ```
 
+## 🗄️ SQL Database Support
+
+### Overview
+tabdiff supports tracking changes in SQL database query results through `.sql` files. This enables monitoring of database tables, views, and complex queries over time with the same powerful change detection capabilities.
+
+### SQL File Format
+SQL files should contain:
+1. **Connection String Comment** (optional): A comment line with DuckDB ATTACH statement for external databases
+2. **Setup Statements** (optional): CREATE, INSERT, or other setup SQL
+3. **Query Statement**: The SELECT query or CTE to snapshot
+
+#### Example: MySQL Database Query
+```sql
+-- query.sql
+-- ATTACH 'host=localhost user={MYSQL_USER} password={MYSQL_PASSWORD} port=3306 database=mydatabase' AS mysql_db (TYPE mysql);
+
+SELECT 
+    product_id,
+    product_name,
+    quantity,
+    last_updated
+FROM mysql_db.products 
+WHERE last_updated > '2025-01-01'
+ORDER BY product_id;
+```
+
+#### Example: In-Memory Test Data
+```sql
+-- test_data.sql
+CREATE TABLE products AS
+SELECT * FROM VALUES 
+    (1, 'Widget A', 25, '2025-01-15'),
+    (2, 'Widget B', 50, '2025-01-16'),
+    (3, 'Gadget X', 75, '2025-01-17')
+AS t(product_id, product_name, quantity, last_updated);
+
+SELECT product_id, product_name, quantity, last_updated
+FROM products 
+ORDER BY product_id;
+```
+
+#### Example: Complex Query with CTEs
+```sql
+-- analytics.sql
+-- ATTACH 'host={POSTGRES_HOST} user={POSTGRES_USER} password={POSTGRES_PASSWORD} dbname={POSTGRES_DATABASE}' AS pg_db (TYPE postgres);
+
+WITH monthly_sales AS (
+    SELECT 
+        product_id,
+        DATE_TRUNC('month', sale_date) as month,
+        SUM(amount) as total_sales
+    FROM pg_db.sales 
+    WHERE sale_date >= '2025-01-01'
+    GROUP BY product_id, DATE_TRUNC('month', sale_date)
+)
+SELECT 
+    p.product_name,
+    s.month,
+    s.total_sales,
+    LAG(s.total_sales) OVER (PARTITION BY p.product_id ORDER BY s.month) as prev_month_sales
+FROM monthly_sales s
+JOIN pg_db.products p ON s.product_id = p.product_id
+ORDER BY p.product_name, s.month;
+```
+
+### Environment Variables
+For secure credential management, create a `.env` file in your project root:
+
+```bash
+# .env
+MYSQL_HOST=localhost
+MYSQL_USER=myuser
+MYSQL_PASSWORD=mypassword
+MYSQL_DATABASE=mydatabase
+
+POSTGRES_HOST=localhost
+POSTGRES_USER=pguser
+POSTGRES_PASSWORD=pgpassword
+POSTGRES_DATABASE=mydb
+```
+
+Use `{VARIABLE_NAME}` syntax in your SQL files for substitution.
+
+### Supported Databases
+- **MySQL**: `TYPE mysql`
+- **PostgreSQL**: `TYPE postgres` 
+- **SQLite**: `TYPE sqlite`
+- **In-memory**: No connection string needed
+- **Any DuckDB-supported database**
+
+### Streaming for Large Datasets
+tabdiff automatically handles large database queries efficiently:
+
+- **Automatic detection**: Large result sets are streamed in chunks
+- **Memory efficient**: Processes millions of rows without loading all into memory
+- **Progress reporting**: Real-time progress updates for long-running queries
+- **Optimized performance**: Adaptive chunk sizes based on dataset size
+- **Transparent**: Write simple `SELECT * FROM table` - streaming happens automatically
+
+**Chunk Sizes:**
+- Small datasets (< 100K rows): 10K row chunks
+- Medium datasets (100K - 1M rows): 25K row chunks  
+- Large datasets (1M - 10M rows): 50K row chunks
+- Very large datasets (> 10M rows): 100K row chunks
+
+### SQL Workflow Example
+
+```bash
+# Set up credentials
+cp .env.sample .env
+# Edit .env with your database credentials
+
+# Create baseline snapshot from database query
+tabdiff snapshot products_query.sql --name baseline
+
+# Database changes occur...
+# Query returns different results
+
+# Check what changed in the query results
+tabdiff status products_query.sql --compare-to baseline --json
+
+# Create new snapshot to track changes
+tabdiff snapshot products_query.sql --name current
+
+# Compare snapshots to see differences
+tabdiff diff baseline current
+
+# Note: Rollback is not supported for SQL queries (read-only)
+```
+
+### Performance Tips
+
+**For Very Large Queries:**
+```bash
+# Use hash-only mode for massive datasets when you only need basic change detection
+tabdiff snapshot huge_query.sql --name v1 --hash-only
+
+# Adjust batch size for optimal performance
+tabdiff snapshot large_query.sql --name v1 --batch-size 100000
+```
+
+**Query Optimization:**
+- Add appropriate `WHERE` clauses to limit data
+- Use indexes on queried columns
+- Consider `LIMIT` for testing before full snapshots
+- Use `ORDER BY` for consistent results across runs
+
+### Supported SQL Features
+- **Standard SELECT queries**: `SELECT * FROM table WHERE condition`
+- **Common Table Expressions**: `WITH cte AS (...) SELECT ...`
+- **JOINs and subqueries**: Complex multi-table queries
+- **Window functions**: `ROW_NUMBER() OVER (...)`, aggregations
+- **All DuckDB SQL syntax**: Full SQL feature support
+
 ## 🔍 Change Detection Features
 
 ### Schema Changes
@@ -461,7 +622,12 @@ tabdiff automatically adds the following to your `.gitignore`:
 ```gitignore
 # Ignore compressed snapshot archives
 .tabdiff/*.tabdiff
+
+# Environment files with credentials (recommended)
+.env
 ```
+
+**Note**: The `.env` file is added to prevent accidentally committing database credentials to version control.
 
 ### DVC Integration (Optional)
 
@@ -613,6 +779,46 @@ tabdiff snapshot large_data.parquet --name v1 --hash-only
 
 # Use batch processing for performance optimization
 tabdiff snapshot large_data.parquet --name v1 --batch-size 50000
+```
+
+### SQL Database Monitoring
+
+```bash
+# Set up database credentials
+cat > .env << EOF
+MYSQL_USER=analyst
+MYSQL_PASSWORD=secret123
+MYSQL_DATABASE=warehouse
+EOF
+
+# Create SQL query file
+cat > daily_metrics.sql << 'EOF'
+-- ATTACH 'host=localhost user={MYSQL_USER} password={MYSQL_PASSWORD} database={MYSQL_DATABASE}' AS db (TYPE mysql);
+SELECT 
+    DATE(created_at) as date,
+    COUNT(*) as daily_orders,
+    SUM(total_amount) as daily_revenue,
+    AVG(total_amount) as avg_order_value
+FROM db.orders 
+WHERE created_at >= CURRENT_DATE - INTERVAL 30 DAY
+GROUP BY DATE(created_at)
+ORDER BY date;
+EOF
+
+# Create baseline snapshot
+tabdiff snapshot daily_metrics.sql --name baseline
+
+# Check daily for changes in business metrics
+tabdiff status daily_metrics.sql --compare-to baseline --json > metrics_changes.json
+
+# Alert if significant changes detected
+if [ "$(jq -r '.row_changes.modified | length' metrics_changes.json)" -gt "5" ]; then
+  echo "Significant changes in daily metrics detected!"
+  tabdiff status daily_metrics.sql --compare-to baseline
+fi
+
+# Create new snapshot for trend tracking
+tabdiff snapshot daily_metrics.sql --name "$(date +%Y-%m-%d)"
 ```
 
 **Automatic File Size Warnings:**
