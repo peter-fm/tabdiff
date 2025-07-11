@@ -13,6 +13,13 @@ fn main() {
         return;
     }
     
+    // Skip DuckDB detection in CI builds (for unbundled releases)
+    if env::var("SKIP_DUCKDB_DETECTION").is_ok() {
+        println!("cargo:warning=Skipping DuckDB detection for CI build");
+        println!("cargo:rustc-link-lib=duckdb");
+        return;
+    }
+    
     // Try to find DuckDB library for linking
     if let Some(lib_path) = find_duckdb_library() {
         println!("cargo:rustc-link-search=native={}", lib_path.display());

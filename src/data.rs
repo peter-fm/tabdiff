@@ -8,6 +8,41 @@ use duckdb::Connection;
 use std::collections::HashMap;
 use std::path::Path;
 
+fn get_duckdb_install_instructions() -> String {
+    if cfg!(target_os = "windows") {
+        r#"  Windows:
+    1. Download DuckDB from: https://duckdb.org/docs/installation/
+    2. Extract to C:\Program Files\DuckDB\ or C:\duckdb\
+    3. Add the lib directory to your PATH environment variable
+    
+  Or use Windows Package Manager:
+    winget install DuckDB.cli"#.to_string()
+    } else if cfg!(target_os = "macos") {
+        r#"  macOS:
+    brew install duckdb
+    
+  Or using MacPorts:
+    sudo port install duckdb"#.to_string()
+    } else {
+        r#"  Linux:
+    # Ubuntu/Debian
+    sudo apt update
+    sudo apt install duckdb
+    
+    # Or manually install from GitHub:
+    wget https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-linux-amd64.zip
+    unzip libduckdb-linux-amd64.zip
+    sudo cp libduckdb.so /usr/local/lib/
+    sudo ldconfig
+    
+    # RHEL/CentOS/Fedora
+    sudo yum install duckdb
+    
+    # Or using snap
+    sudo snap install duckdb"#.to_string()
+    }
+}
+
 /// Data processor for various file formats
 pub struct DataProcessor {
     connection: Connection,
@@ -24,7 +59,31 @@ impl DataProcessor {
 
     /// Create a new data processor with custom configuration
     pub fn new_with_config(chunk_size: usize) -> Result<Self> {
-        let connection = Connection::open_in_memory()?;
+        let connection = match Connection::open_in_memory() {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Check if this is a DuckDB library loading error
+                let error_msg = e.to_string();
+                if error_msg.contains("libduckdb") || error_msg.contains("duckdb.dll") || error_msg.contains("cannot open shared object") {
+                    let install_instructions = get_duckdb_install_instructions();
+                    eprintln!("❌ DuckDB library not found!");
+                    eprintln!();
+                    eprintln!("This version of tabdiff requires DuckDB to be installed on your system.");
+                    eprintln!();
+                    eprintln!("📦 Install DuckDB:");
+                    eprintln!("{}", install_instructions);
+                    eprintln!();
+                    eprintln!("💡 Alternatively, download the bundled version that includes DuckDB:");
+                    eprintln!("   Visit: https://github.com/peter-fm/tabdiff/releases/latest");
+                    eprintln!();
+                    eprintln!("   For your platform, download the file ending with '-bundled' instead.");
+                    eprintln!();
+                    eprintln!("Original error: {}", error_msg);
+                    std::process::exit(1);
+                }
+                return Err(e.into());
+            }
+        };
         
         // Optimize DuckDB for large datasets and performance
         connection.execute("SET memory_limit='4GB'", [])?;

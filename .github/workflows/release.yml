@@ -11,59 +11,29 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}-${{ matrix.variant }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            variant: bundled
-            name: tabdiff-windows-x64-bundled.exe
-            
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            variant: unbundled
             name: tabdiff-windows-x64.exe
             
           - target: x86_64-apple-darwin
             os: macos-latest
-            variant: bundled
-            name: tabdiff-macos-x64-bundled
-            
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            variant: unbundled
             name: tabdiff-macos-x64
             
           - target: aarch64-apple-darwin
             os: macos-latest
-            variant: bundled
-            name: tabdiff-macos-arm64-bundled
-            
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            variant: unbundled
             name: tabdiff-macos-arm64
             
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            variant: bundled
-            name: tabdiff-linux-x64-bundled
-            
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: unbundled
             name: tabdiff-linux-x64
             
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            variant: bundled
-            name: tabdiff-linux-arm64-bundled
-            
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: unbundled
             name: tabdiff-linux-arm64
 
     steps:
@@ -87,22 +57,10 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - name: Install DuckDB (Ubuntu - unbundled)
-        if: matrix.os == 'ubuntu-latest' && matrix.variant == 'unbundled'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libduckdb-dev
 
-      - name: Install DuckDB (macOS - unbundled)
-        if: matrix.os == 'macos-latest' && matrix.variant == 'unbundled'
-        run: brew install duckdb
-
-      - name: Build (bundled)
-        if: matrix.variant == 'bundled'
-        run: cargo build --release --target ${{ matrix.target }} --features bundled
-
-      - name: Build (unbundled)
-        if: matrix.variant == 'unbundled'
+      - name: Build
+        env:
+          SKIP_DUCKDB_DETECTION: "1"  # Skip DuckDB detection in CI
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary (Windows)
