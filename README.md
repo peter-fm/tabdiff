@@ -26,32 +26,60 @@
 ### 🚀 Quick Install (Recommended)
 
 #### Pre-built Binaries
-Download the latest release for your platform:
+Download the latest release for your platform. Two versions are available:
+
+**🔋 Bundled Version (Recommended)** - Zero dependencies, larger file size (~50MB):
+- ✅ Works immediately on any system
+- ✅ No DuckDB installation required
+- ✅ Completely portable
+
+**⚡ Unbundled Version** - Smaller file size (~5MB), requires DuckDB:
+- ✅ Much smaller download
+- ❌ Requires DuckDB to be installed on system
 
 **Windows (x64):**
 ```bash
-# Download from GitHub releases
+# Bundled (recommended)
+curl -L -o tabdiff.exe "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-windows-x64-bundled.exe"
+
+# Unbundled (requires DuckDB)
 curl -L -o tabdiff.exe "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-windows-x64.exe"
 ```
 
 **macOS:**
 ```bash
-# Intel Macs
+# Intel Macs - Bundled (recommended)
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-x64-bundled"
+chmod +x tabdiff
+
+# Intel Macs - Unbundled (requires: brew install duckdb)
 curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-x64"
 chmod +x tabdiff
 
-# Apple Silicon Macs
+# Apple Silicon Macs - Bundled (recommended)
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-arm64-bundled"
+chmod +x tabdiff
+
+# Apple Silicon Macs - Unbundled (requires: brew install duckdb)
 curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-arm64"
 chmod +x tabdiff
 ```
 
 **Linux:**
 ```bash
-# x86_64
+# x86_64 - Bundled (recommended)
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-x64-bundled"
+chmod +x tabdiff
+
+# x86_64 - Unbundled (requires: sudo apt install libduckdb-dev)
 curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-x64"
 chmod +x tabdiff
 
-# ARM64
+# ARM64 - Bundled (recommended)
+curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-arm64-bundled"
+chmod +x tabdiff
+
+# ARM64 - Unbundled (requires: sudo apt install libduckdb-dev)
 curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-arm64"
 chmod +x tabdiff
 ```

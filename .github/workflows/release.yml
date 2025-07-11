@@ -87,6 +87,16 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
+      - name: Install DuckDB (Ubuntu - unbundled)
+        if: matrix.os == 'ubuntu-latest' && matrix.variant == 'unbundled'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libduckdb-dev
+
+      - name: Install DuckDB (macOS - unbundled)
+        if: matrix.os == 'macos-latest' && matrix.variant == 'unbundled'
+        run: brew install duckdb
+
       - name: Build (bundled)
         if: matrix.variant == 'bundled'
         run: cargo build --release --target ${{ matrix.target }} --features bundled
