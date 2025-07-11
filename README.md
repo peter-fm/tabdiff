@@ -74,29 +74,40 @@ chmod +x tabdiff
 **Manual Download:**
 Visit the [releases page](https://github.com/peter-fm/tabdiff/releases) and download the appropriate binary for your platform.
 
-#### Installing DuckDB (For Unbundled Versions)
+#### Installing DuckDB Library (For Unbundled Versions)
+
+**Important:** You need to install the **DuckDB library** (libduckdb), not just the CLI tool.
 
 **Windows:**
 ```bash
-# Using Windows Package Manager
-winget install DuckDB.cli
+# Download the DuckDB library files (not the CLI)
+curl -L -o duckdb.zip https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-windows-amd64.zip
+7z x duckdb.zip
+mkdir "C:\Program Files\DuckDB\lib"
+mkdir "C:\Program Files\DuckDB\include"
+copy duckdb.dll "C:\Program Files\DuckDB\lib\"
+copy duckdb.lib "C:\Program Files\DuckDB\lib\"
+copy duckdb.h "C:\Program Files\DuckDB\include\"
 
-# Or download from: https://duckdb.org/docs/installation/
+# Add to PATH environment variable
+# Add C:\Program Files\DuckDB\lib to your PATH
 ```
 
 **Linux:**
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install duckdb
+# Manual installation (recommended for latest version)
+wget https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-linux-amd64.zip
+unzip libduckdb-linux-amd64.zip
+sudo cp libduckdb.so /usr/local/lib/
+sudo cp duckdb.h /usr/local/include/
+sudo ldconfig
 
-# RHEL/CentOS/Fedora
-sudo yum install duckdb
-
-# Or using snap
-sudo snap install duckdb
+# Package manager (if available - may be outdated)
+# Ubuntu/Debian: sudo apt update && sudo apt install libduckdb-dev
+# Fedora: sudo dnf install duckdb-devel
 ```
 
-**Don't have DuckDB installed?** If you try to run the unbundled version without DuckDB, it will show you detailed installation instructions for your platform.
+**Don't have DuckDB installed?** If you try to run the unbundled version without the DuckDB library, it will show you detailed installation instructions for your platform.
 
 **Note:** Unbundled versions are only available for Windows and Linux. macOS users should use the bundled version or build from source.
 

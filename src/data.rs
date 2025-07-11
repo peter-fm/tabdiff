@@ -11,12 +11,17 @@ use std::path::Path;
 fn get_duckdb_install_instructions() -> String {
     if cfg!(target_os = "windows") {
         r#"  Windows:
-    1. Download DuckDB from: https://duckdb.org/docs/installation/
-    2. Extract to C:\Program Files\DuckDB\ or C:\duckdb\
-    3. Add the lib directory to your PATH environment variable
+    Download and install the DuckDB library (not the CLI):
     
-  Or use Windows Package Manager:
-    winget install DuckDB.cli"#.to_string()
+    curl -L -o duckdb.zip https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-windows-amd64.zip
+    7z x duckdb.zip
+    mkdir "C:\Program Files\DuckDB\lib"
+    mkdir "C:\Program Files\DuckDB\include"
+    copy duckdb.dll "C:\Program Files\DuckDB\lib\"
+    copy duckdb.lib "C:\Program Files\DuckDB\lib\"
+    copy duckdb.h "C:\Program Files\DuckDB\include\"
+    
+    Then add C:\Program Files\DuckDB\lib to your PATH environment variable."#.to_string()
     } else if cfg!(target_os = "macos") {
         r#"  macOS:
     Unbundled builds are not available for macOS due to cross-compilation complexity.
@@ -29,21 +34,19 @@ fn get_duckdb_install_instructions() -> String {
     cargo build --release --features bundled"#.to_string()
     } else {
         r#"  Linux:
-    # Ubuntu/Debian
-    sudo apt update
-    sudo apt install duckdb
+    Install the DuckDB library (libduckdb):
     
-    # Or manually install from GitHub:
+    # Manual installation (recommended):
     wget https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-linux-amd64.zip
     unzip libduckdb-linux-amd64.zip
     sudo cp libduckdb.so /usr/local/lib/
+    sudo cp duckdb.h /usr/local/include/
     sudo ldconfig
     
-    # RHEL/CentOS/Fedora
-    sudo yum install duckdb
-    
-    # Or using snap
-    sudo snap install duckdb"#.to_string()
+    # Package manager (if available):
+    # Ubuntu/Debian: sudo apt update && sudo apt install libduckdb-dev
+    # Fedora: sudo dnf install duckdb-devel
+    # Note: Package manager versions may be outdated"#.to_string()
     }
 }
 
