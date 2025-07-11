@@ -55,16 +55,6 @@ jobs:
             os: ubuntu-latest
             variant: unbundled
             name: tabdiff-linux-x64
-            
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: bundled
-            name: tabdiff-linux-arm64-bundled
-            
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: unbundled
-            name: tabdiff-linux-arm64
 
     steps:
       - name: Checkout code
@@ -75,20 +65,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Configure cross-compilation (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
       - name: Install DuckDB (Ubuntu x86_64 - unbundled)
-        if: matrix.os == 'ubuntu-latest' && matrix.variant == 'unbundled' && matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.os == 'ubuntu-latest' && matrix.variant == 'unbundled'
         run: |
           sudo apt-get update
           wget https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-linux-amd64.zip
@@ -96,20 +74,18 @@ jobs:
           sudo cp libduckdb.so /usr/local/lib/
           sudo cp duckdb.h /usr/local/include/
           sudo ldconfig
-
-      - name: Install DuckDB (Ubuntu ARM64 - unbundled)
-        if: matrix.os == 'ubuntu-latest' && matrix.variant == 'unbundled' && matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          wget https://github.com/duckdb/duckdb/releases/latest/download/libduckdb-linux-aarch64.zip
-          unzip libduckdb-linux-aarch64.zip
-          sudo cp libduckdb.so /usr/local/lib/
-          sudo cp duckdb.h /usr/local/include/
-          sudo ldconfig
+          # Verify installation
+          ls -la /usr/local/lib/libduckdb.so
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Install DuckDB (macOS - unbundled)
         if: matrix.os == 'macos-latest' && matrix.variant == 'unbundled'
-        run: brew install duckdb
+        run: |
+          brew install duckdb
+          # Verify installation
+          ls -la $(brew --prefix)/lib/libduckdb.dylib
+          echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Install DuckDB (Windows - unbundled)
         if: matrix.os == 'windows-latest' && matrix.variant == 'unbundled'
@@ -130,7 +106,23 @@ jobs:
 
       - name: Build (unbundled)
         if: matrix.variant == 'unbundled'
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          echo "Building unbundled version for ${{ matrix.target }}"
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            export DUCKDB_LIB_PATH="$(brew --prefix)/lib"
+            echo "macOS: DUCKDB_LIB_PATH=$DUCKDB_LIB_PATH"
+            ls -la "$DUCKDB_LIB_PATH"/libduckdb.* || echo "DuckDB library not found in $DUCKDB_LIB_PATH"
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            export DUCKDB_LIB_PATH="C:/Program Files/DuckDB/lib"
+            echo "Windows: DUCKDB_LIB_PATH=$DUCKDB_LIB_PATH"
+            ls -la "$DUCKDB_LIB_PATH"/duckdb.* || echo "DuckDB library not found in $DUCKDB_LIB_PATH"
+          else
+            export DUCKDB_LIB_PATH="/usr/local/lib"
+            echo "Linux: DUCKDB_LIB_PATH=$DUCKDB_LIB_PATH"
+            ls -la "$DUCKDB_LIB_PATH"/libduckdb.* || echo "DuckDB library not found in $DUCKDB_LIB_PATH"
+          fi
+          cargo build --release --target ${{ matrix.target }} --verbose
 
       - name: Rename binary (Windows)
         if: matrix.os == 'windows-latest'

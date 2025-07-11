@@ -75,13 +75,8 @@ chmod +x tabdiff
 curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-x64"
 chmod +x tabdiff
 
-# ARM64 - Bundled (recommended)
-curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-arm64-bundled"
-chmod +x tabdiff
-
-# ARM64 - Unbundled (requires: sudo apt install duckdb)
-curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-linux-arm64"
-chmod +x tabdiff
+# ARM64 - Not available yet (use x86_64 version with emulation)
+# Or build from source with: cargo build --release --features bundled
 ```
 
 **Manual Download:**
