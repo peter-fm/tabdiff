@@ -14,7 +14,6 @@ fn main() {
     }
     
     // Try to find DuckDB library for linking
-    println!("cargo:warning=Starting DuckDB library search...");
     if let Some(lib_path) = find_duckdb_library() {
         println!("cargo:rustc-link-search=native={}", lib_path.display());
         println!("cargo:rustc-link-lib=duckdb");
@@ -48,13 +47,9 @@ fn main() {
 fn find_duckdb_library() -> Option<PathBuf> {
     // 1. Check environment variable override
     if let Ok(path) = env::var("DUCKDB_LIB_PATH") {
-        println!("cargo:warning=Checking DUCKDB_LIB_PATH: {}", path);
         let path_buf = PathBuf::from(path);
         if check_duckdb_library(&path_buf) {
-            println!("cargo:warning=Found DuckDB via DUCKDB_LIB_PATH: {}", path_buf.display());
             return Some(path_buf);
-        } else {
-            println!("cargo:warning=DUCKDB_LIB_PATH exists but no DuckDB library found");
         }
     }
 
@@ -64,11 +59,8 @@ fn find_duckdb_library() -> Option<PathBuf> {
     }
 
     // 3. Check standard system paths
-    println!("cargo:warning=Checking standard system paths...");
     for path in get_standard_paths() {
-        println!("cargo:warning=Checking path: {}", path.display());
         if check_duckdb_library(&path) {
-            println!("cargo:warning=Found DuckDB at: {}", path.display());
             return Some(path);
         }
     }

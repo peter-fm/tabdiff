@@ -19,10 +19,14 @@ fn get_duckdb_install_instructions() -> String {
     winget install DuckDB.cli"#.to_string()
     } else if cfg!(target_os = "macos") {
         r#"  macOS:
-    brew install duckdb
+    Unbundled builds are not available for macOS due to cross-compilation complexity.
+    Please use the bundled version or build from source:
     
-  Or using MacPorts:
-    sudo port install duckdb"#.to_string()
+    # Use bundled version (recommended):
+    curl -L -o tabdiff "https://github.com/peter-fm/tabdiff/releases/latest/download/tabdiff-macos-arm64-bundled"
+    
+    # Or build from source:
+    cargo build --release --features bundled"#.to_string()
     } else {
         r#"  Linux:
     # Ubuntu/Debian
