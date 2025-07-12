@@ -409,32 +409,57 @@ impl DataProcessor {
         all_data.reserve(total_rows as usize); // Pre-allocate the entire vector to prevent reallocations
         let mut processed_rows = 0u64;
 
-        // Use adaptive chunk size based on total rows
-        let chunk_size = if total_rows > 1_000_000 {
-            50_000 // Large datasets: 50K rows per chunk
-        } else if total_rows > 100_000 {
-            25_000 // Medium datasets: 25K rows per chunk
-        } else {
-            self.chunk_size.min(total_rows as usize) // Small datasets: use configured chunk size
-        };
+        // No chunking needed - use streaming approach
 
-        while processed_rows < total_rows {
-            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
+        // Execute the full query once and stream through results (no LIMIT/OFFSET)
+        let mut stmt = self.connection.prepare("SELECT * FROM data_view")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare streaming data query: {}", e)
+            ))?;
+
+        let rows = stmt.query_map([], |row| {
+            let mut string_row = Vec::with_capacity(column_count);
+            for i in 0..column_count {
+                let value: String = match row.get_ref(i)? {
+                    duckdb::types::ValueRef::Null => String::new(),
+                    duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
+                    duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Int(i) => i.to_string(),
+                    duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Float(f) => f.to_string(),
+                    duckdb::types::ValueRef::Double(f) => f.to_string(),
+                    duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
+                    duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                    duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                    duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                    duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                    _ => "<unknown>".to_string(),
+                };
+                string_row.push(value);
+            }
+            Ok(string_row)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to stream data query: {}", e)
+        ))?;
+
+        for row_result in rows {
+            let row = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process streaming row: {}", e)
+            ))?;
             
-            let chunk_sql = format!(
-                "SELECT * FROM data_view LIMIT {} OFFSET {}",
-                current_chunk_size,
-                processed_rows
-            );
+            all_data.push(row);
+            processed_rows += 1;
 
-            let chunk_data = self.execute_chunk_query(&chunk_sql, column_count)?;
-            processed_rows += chunk_data.len() as u64;
-            all_data.extend(chunk_data);
-
-            // Report progress less frequently for better performance (regular files)
+            // Report progress at regular intervals for better performance
             if let Some(callback) = progress_callback {
-                // Only report progress every 5 chunks or at the end
-                if processed_rows % (chunk_size as u64 * 5) == 0 || processed_rows >= total_rows {
+                if processed_rows % 50000 == 0 || processed_rows >= total_rows {
                     callback(processed_rows, total_rows);
                 }
             }
@@ -713,22 +738,31 @@ impl DataProcessor {
         Ok(processed_rows)
     }
 
-    /// Extract data by columns
+    /// Extract data by columns (optimized to use single query instead of N queries)
     pub fn extract_column_data(&mut self) -> Result<HashMap<String, Vec<String>>> {
         let columns = self.get_column_info()?;
-        let mut column_data = HashMap::new();
+        if columns.is_empty() {
+            return Ok(HashMap::new());
+        }
         
-        for column in &columns {
-            let sql = format!("SELECT \"{}\" FROM data_view", column.name);
-            let mut stmt = self.connection.prepare(&sql)
-                .map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to prepare column query for '{}': {}", column.name, e)
-                ))?;
-            
-            let rows = stmt.query_map([], |row| {
-                let value: String = match row.get_ref(0)? {
+        // Initialize column data vectors
+        let mut column_data: HashMap<String, Vec<String>> = columns
+            .iter()
+            .map(|col| (col.name.clone(), Vec::new()))
+            .collect();
+        
+        // Single query to get all columns at once (much more efficient than N queries)
+        let mut stmt = self.connection.prepare("SELECT * FROM data_view")
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare column data query: {}", e)
+            ))?;
+        
+        let rows = stmt.query_map([], |row| {
+            let mut row_values = Vec::with_capacity(columns.len());
+            for i in 0..columns.len() {
+                let value: String = match row.get_ref(i)? {
                     duckdb::types::ValueRef::Null => String::new(),
-                    duckdb::types::ValueRef::Boolean(b) => b.to_string(),
+                    duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
                     duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
                     duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
                     duckdb::types::ValueRef::Int(i) => i.to_string(),
@@ -741,26 +775,34 @@ impl DataProcessor {
                     duckdb::types::ValueRef::Float(f) => f.to_string(),
                     duckdb::types::ValueRef::Double(f) => f.to_string(),
                     duckdb::types::ValueRef::Decimal(d) => d.to_string(),
-                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
                     duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
                     duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
                     duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
                     duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
                     _ => "<unknown>".to_string(),
                 };
-                Ok(value)
-            }).map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to extract column data for '{}': {}", column.name, e)
+                row_values.push(value);
+            }
+            Ok(row_values)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to extract column data: {}", e)
+        ))?;
+        
+        // Process each row and distribute values to appropriate columns
+        for row_result in rows {
+            let row_values = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process column data row: {}", e)
             ))?;
             
-            let mut values = Vec::new();
-            for row in rows {
-                values.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to process column data row for '{}': {}", column.name, e)
-                ))?);
+            // Distribute row values to their respective columns
+            for (col_index, value) in row_values.into_iter().enumerate() {
+                if let Some(column) = columns.get(col_index) {
+                    if let Some(col_vec) = column_data.get_mut(&column.name) {
+                        col_vec.push(value);
+                    }
+                }
             }
-            
-            column_data.insert(column.name.clone(), values);
         }
         
         Ok(column_data)

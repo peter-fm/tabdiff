@@ -421,9 +421,8 @@ impl SnapshotCreator {
                 
                 // CRITICAL FIX: Always check for schema changes, not just row changes
                 if parent_archive_path.exists() {
-                    // Step 1: Load parent schema and data for comparison
-                    let parent_schema = self.load_cached_schema(&parent_archive_path)?;
-                    let parent_row_data = self.load_cached_row_data(&parent_archive_path)?;
+                    // Step 1: Load parent schema and data for comparison (single extraction)
+                    let (parent_schema, parent_row_data) = self.load_cached_schema_and_data(&parent_archive_path)?;
                     let current_row_data = self.extract_current_row_data(current_data_info)?;
                     
                     // Step 2: Always run comprehensive change detection (schema + rows)
@@ -484,6 +483,78 @@ impl SnapshotCreator {
         }
     }
 
+
+    /// Load both cached schema and row data from archive with single extraction
+    fn load_cached_schema_and_data(
+        &self, 
+        archive_path: &Path
+    ) -> Result<(Vec<crate::hash::ColumnInfo>, Vec<Vec<String>>)> {
+        let files = ArchiveManager::extract_archive(archive_path)?;
+        
+        let mut schema = Vec::new();
+        let mut row_data = Vec::new();
+        
+        for (filename, content) in files {
+            if filename == "schema.json" {
+                // Process schema data
+                let content_str = String::from_utf8(content)?;
+                let schema_data: serde_json::Value = serde_json::from_str(&content_str)?;
+                
+                if let Some(columns_data) = schema_data.get("columns") {
+                    if let Some(columns_array) = columns_data.as_array() {
+                        for column_value in columns_array {
+                            if let Some(column_obj) = column_value.as_object() {
+                                let name = column_obj.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let data_type = column_obj.get("data_type")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let nullable = column_obj.get("nullable")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(true);
+                                
+                                schema.push(crate::hash::ColumnInfo {
+                                    name,
+                                    data_type,
+                                    nullable,
+                                });
+                            }
+                        }
+                    }
+                }
+            } else if filename == "data.parquet" {
+                // Process row data  
+                let content_str = String::from_utf8(content)?;
+                let data_parquet: serde_json::Value = serde_json::from_str(&content_str)?;
+                
+                if let Some(rows_array_data) = data_parquet.get("rows") {
+                    if let Some(rows_array) = rows_array_data.as_array() {
+                        for row_value in rows_array {
+                            if let Some(row_array) = row_value.as_array() {
+                                let mut row_strings = Vec::new();
+                                for cell_value in row_array {
+                                    let cell_string = match cell_value {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        serde_json::Value::Number(n) => n.to_string(),
+                                        serde_json::Value::Bool(b) => b.to_string(),
+                                        serde_json::Value::Null => String::new(),
+                                        _ => cell_value.to_string(),
+                                    };
+                                    row_strings.push(cell_string);
+                                }
+                                row_data.push(row_strings);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok((schema, row_data))
+    }
 
     /// Load cached row data from archive for detailed comparison
     fn load_cached_row_data(&self, archive_path: &Path) -> Result<Vec<Vec<String>>> {
