@@ -2,6 +2,8 @@
 
 use crate::error::{Result, TabdiffError};
 use crate::workspace::TabdiffWorkspace;
+use crate::snapshot::SnapshotLoader;
+use chrono::{DateTime, Utc, NaiveDateTime, TimeZone};
 use std::path::{Path, PathBuf};
 
 /// Reference to a snapshot (by name or path)
@@ -160,6 +162,80 @@ impl SnapshotResolver {
     pub fn workspace(&self) -> &TabdiffWorkspace {
         &self.workspace
     }
+
+    /// Parse a date string and resolve to the latest snapshot before that time
+    pub fn resolve_by_date(&self, date_str: &str) -> Result<ResolvedSnapshot> {
+        let target_date = parse_date_string(date_str)?;
+        
+        // Get all snapshots
+        let snapshot_names = self.list_snapshots()?;
+        
+        let mut best_snapshot: Option<(String, DateTime<Utc>)> = None;
+        
+        // Find the latest snapshot before the target date
+        for name in snapshot_names {
+            let (_, json_path) = self.workspace.snapshot_paths(&name);
+            if !json_path.exists() {
+                continue;
+            }
+            
+            // Load metadata to get creation time
+            match SnapshotLoader::load_metadata(&json_path) {
+                Ok(metadata) => {
+                    // Only consider snapshots created before the target date
+                    if metadata.created <= target_date {
+                        match &best_snapshot {
+                            None => {
+                                best_snapshot = Some((name, metadata.created));
+                            }
+                            Some((_, best_date)) => {
+                                if metadata.created > *best_date {
+                                    best_snapshot = Some((name, metadata.created));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => continue, // Skip snapshots with invalid metadata
+            }
+        }
+        
+        match best_snapshot {
+            Some((name, created)) => {
+                println!("🕒 Found snapshot '{}' created at {}", name, created.format("%Y-%m-%d %H:%M:%S UTC"));
+                self.resolve_by_name(&name)
+            }
+            None => Err(TabdiffError::SnapshotNotFound {
+                name: format!("No snapshots found before {}", target_date.format("%Y-%m-%d %H:%M:%S UTC")),
+            }),
+        }
+    }
+}
+
+/// Parse a date string in various formats
+fn parse_date_string(date_str: &str) -> Result<DateTime<Utc>> {
+    // Try different date formats
+    
+    // Format 1: "2025-01-01 15:00:00" (date and time)
+    if let Ok(naive_dt) = NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
+        return Ok(Utc.from_utc_datetime(&naive_dt));
+    }
+    
+    // Format 2: "2025-01-01" (date only, defaults to start of day)
+    if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        let naive_dt = naive_date.and_hms_opt(0, 0, 0).unwrap();
+        return Ok(Utc.from_utc_datetime(&naive_dt));
+    }
+    
+    // Format 3: ISO 8601 with timezone
+    if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    
+    Err(TabdiffError::invalid_input(format!(
+        "Invalid date format: '{}'. Supported formats: 'YYYY-MM-DD', 'YYYY-MM-DD HH:MM:SS', or ISO 8601",
+        date_str
+    )))
 }
 
 /// A resolved snapshot with all relevant paths

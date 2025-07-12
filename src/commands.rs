@@ -50,10 +50,11 @@ pub fn execute_command(command: Commands, workspace_path: Option<&Path>) -> Resu
         Commands::Rollback {
             input,
             to,
+            to_date,
             dry_run,
             force,
             backup,
-        } => rollback_command(workspace_path, &input, &to, dry_run, force, backup),
+        } => rollback_command(workspace_path, &input, to.as_deref(), to_date.as_deref(), dry_run, force, backup),
         Commands::Chain { json } => chain_command(workspace_path, json),
         Commands::Cleanup {
             keep_full,
@@ -100,7 +101,8 @@ fn init_command(workspace_path: Option<&Path>, force: bool) -> Result<()> {
 fn rollback_command(
     workspace_path: Option<&Path>,
     input: &str,
-    to: &str,
+    to: Option<&str>,
+    to_date: Option<&str>,
     dry_run: bool,
     force: bool,
     backup: bool,
@@ -108,10 +110,29 @@ fn rollback_command(
     let workspace = TabdiffWorkspace::find_or_create(workspace_path)?;
     let resolver = SnapshotResolver::new(workspace.clone());
 
+    // Validate that exactly one target option is provided
+    match (to, to_date) {
+        (None, None) => {
+            return Err(crate::error::TabdiffError::invalid_input(
+                "Must provide either --to <snapshot_name> or --to-date <date>".to_string()
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(crate::error::TabdiffError::invalid_input(
+                "Cannot provide both --to and --to-date options".to_string()
+            ));
+        }
+        _ => {} // Exactly one is provided, which is valid
+    }
+
     // Resolve target snapshot
-    let target_snapshot = {
-        let snap_ref = SnapshotRef::from_string(to.to_string());
+    let target_snapshot = if let Some(snapshot_name) = to {
+        let snap_ref = SnapshotRef::from_string(snapshot_name.to_string());
         resolver.resolve(&snap_ref)?
+    } else if let Some(date_str) = to_date {
+        resolver.resolve_by_date(date_str)?
+    } else {
+        unreachable!("Should have been caught by validation above")
     };
 
     println!("🔄 Rolling back '{}' to snapshot '{}'...", input, target_snapshot.name);

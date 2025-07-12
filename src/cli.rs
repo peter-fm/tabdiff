@@ -115,8 +115,13 @@ pub enum Commands {
         input: String,
         
         /// Snapshot to rollback to
-        #[arg(long)]
-        to: String,
+        #[arg(long, conflicts_with = "to_date")]
+        to: Option<String>,
+        
+        /// Date/time to rollback to (e.g., '2025-01-01' or '2025-01-01 15:00:00')
+        /// Finds the latest snapshot before this time
+        #[arg(long, conflicts_with = "to")]
+        to_date: Option<String>,
         
         /// Show what would be changed without applying (dry run)
         #[arg(long)]

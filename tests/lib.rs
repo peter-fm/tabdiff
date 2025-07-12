@@ -27,6 +27,7 @@ pub mod functional {
     pub mod basic_functionality_tests;
     pub mod core_validation_tests;
     pub mod sql_tests;
+    pub mod date_rollback_tests;
 }
 
 // Re-export common utilities for easy access
