@@ -479,21 +479,4 @@ pub mod assertions {
         assert!(found_match, "Should find matching removed row data");
     }
 
-    /// Assert that rollback operations are valid and complete
-    pub fn assert_rollback_operations_valid(
-        json: &serde_json::Value,
-        expected_operation_count: usize
-    ) {
-        let rollback_ops = json["rollback_operations"].as_array()
-            .expect("Should have rollback_operations array");
-        
-        assert_eq!(rollback_ops.len(), expected_operation_count,
-                  "Should have expected number of rollback operations");
-        
-        // Verify each operation has required fields
-        for op in rollback_ops {
-            assert!(op["operation_type"].is_string(), "Operation should have type");
-            assert!(op["parameters"].is_object(), "Operation should have parameters");
-        }
-    }
 }

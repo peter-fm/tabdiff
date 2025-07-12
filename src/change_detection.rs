@@ -10,7 +10,6 @@ use std::collections::HashMap;
 pub struct ChangeDetectionResult {
     pub schema_changes: SchemaChanges,
     pub row_changes: RowChanges,
-    pub rollback_operations: Vec<RollbackOperation>,
 }
 
 /// Schema-level changes
@@ -100,25 +99,6 @@ pub struct RowRemoval {
     pub data: HashMap<String, String>,
 }
 
-/// Rollback operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RollbackOperation {
-    pub operation_type: RollbackOperationType,
-    pub parameters: HashMap<String, serde_json::Value>,
-}
-
-/// Types of rollback operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RollbackOperationType {
-    UpdateCell,
-    RestoreRow,
-    RemoveRow,
-    RenameColumn,
-    ChangeColumnType,
-    AddColumn,
-    RemoveColumn,
-    ReorderColumns,
-}
 
 /// Change detector for comprehensive analysis
 pub struct ChangeDetector;
@@ -138,12 +118,9 @@ impl ChangeDetector {
             current_schema,
             current_data,
         )?;
-        let rollback_operations = Self::generate_rollback_operations(&schema_changes, &row_changes)?;
-
         Ok(ChangeDetectionResult {
             schema_changes,
             row_changes,
-            rollback_operations,
         })
     }
 
@@ -578,125 +555,6 @@ impl ChangeDetector {
     }
 
 
-    /// Generate rollback operations in reverse order
-    fn generate_rollback_operations(
-        schema_changes: &SchemaChanges,
-        row_changes: &RowChanges,
-    ) -> Result<Vec<RollbackOperation>> {
-        let mut operations = Vec::new();
-
-        // Step 1: Undo row changes first (in reverse order)
-        
-        // Undo row additions (remove them)
-        for addition in row_changes.added.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::RemoveRow,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("row_index".to_string(), serde_json::Value::Number(addition.row_index.into()));
-                    params
-                },
-            });
-        }
-
-        // Undo row modifications (restore original values)
-        for modification in row_changes.modified.iter().rev() {
-            for (column, change) in &modification.changes {
-                operations.push(RollbackOperation {
-                    operation_type: RollbackOperationType::UpdateCell,
-                    parameters: {
-                        let mut params = HashMap::new();
-                        params.insert("row_index".to_string(), serde_json::Value::Number(modification.row_index.into()));
-                        params.insert("column".to_string(), serde_json::Value::String(column.clone()));
-                        params.insert("value".to_string(), serde_json::Value::String(change.before.clone()));
-                        params
-                    },
-                });
-            }
-        }
-
-        // Undo row removals (restore them)
-        for removal in row_changes.removed.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::RestoreRow,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("row_index".to_string(), serde_json::Value::Number(removal.row_index.into()));
-                    params.insert("data".to_string(), serde_json::to_value(&removal.data)?);
-                    params
-                },
-            });
-        }
-
-        // Step 2: Undo schema changes (in reverse order)
-        
-        // Undo type changes
-        for type_change in schema_changes.type_changes.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::ChangeColumnType,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("column".to_string(), serde_json::Value::String(type_change.column.clone()));
-                    params.insert("to".to_string(), serde_json::Value::String(type_change.from.clone()));
-                    params
-                },
-            });
-        }
-
-        // Undo column renames
-        for rename in schema_changes.columns_renamed.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::RenameColumn,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("from".to_string(), serde_json::Value::String(rename.to.clone()));
-                    params.insert("to".to_string(), serde_json::Value::String(rename.from.clone()));
-                    params
-                },
-            });
-        }
-
-        // Undo column additions (remove them)
-        for addition in schema_changes.columns_added.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::RemoveColumn,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("name".to_string(), serde_json::Value::String(addition.name.clone()));
-                    params
-                },
-            });
-        }
-
-        // Undo column removals (restore them)
-        for removal in schema_changes.columns_removed.iter().rev() {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::AddColumn,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("name".to_string(), serde_json::Value::String(removal.name.clone()));
-                    params.insert("data_type".to_string(), serde_json::Value::String(removal.data_type.clone()));
-                    params.insert("position".to_string(), serde_json::Value::Number(removal.position.into()));
-                    params.insert("nullable".to_string(), serde_json::Value::Bool(removal.nullable));
-                    params
-                },
-            });
-        }
-
-        // Undo column order changes
-        if let Some(order_change) = &schema_changes.column_order {
-            operations.push(RollbackOperation {
-                operation_type: RollbackOperationType::ReorderColumns,
-                parameters: {
-                    let mut params = HashMap::new();
-                    params.insert("order".to_string(), serde_json::to_value(&order_change.before)?);
-                    params
-                },
-            });
-        }
-
-        Ok(operations)
-    }
 }
 
 impl SchemaChanges {

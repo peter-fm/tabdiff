@@ -935,7 +935,16 @@ fn cleanup_command(
 
     // Ask for confirmation unless force is used
     if !force {
-        println!("\n⚠️  This will remove full data from {} snapshots (keeping deltas). Continue? (y/N)", candidates_for_cleanup.len());
+        println!("\n⚠️  ROLLBACK IMPACT WARNING:");
+        if !candidates_for_cleanup.is_empty() {
+            let oldest_cleanup = &candidates_for_cleanup[candidates_for_cleanup.len() - 1];
+            let newest_cleanup = &candidates_for_cleanup[0];
+            println!("   • Rollback will NOT work for snapshots: {} to {}", oldest_cleanup.name, newest_cleanup.name);
+        }
+        println!("   • Rollback WILL work for the {} most recent snapshots", keep_full);
+        println!("   • Full data will be removed from {} snapshots (deltas preserved)", candidates_for_cleanup.len());
+        println!("\n❓ Continue with cleanup? (y/N)");
+        
         let mut user_input = String::new();
         std::io::stdin().read_line(&mut user_input)?;
         

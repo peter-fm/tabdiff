@@ -344,23 +344,7 @@ tabdiff status <input> [options]
       }
     ],
     "removed": []
-  },
-  "rollback_operations": [
-    {
-      "operation_type": "RemoveRow",
-      "parameters": {
-        "row_index": 5
-      }
-    },
-    {
-      "operation_type": "UpdateCell",
-      "parameters": {
-        "row_index": 0,
-        "column": "rating",
-        "value": "4.5"
-      }
-    }
-  ]
+  }
 }
 ```
 
@@ -442,25 +426,29 @@ tabdiff cleanup [options]
 ```
 
 **Options:**
-- `--keep-full <N>`: Number of snapshots to keep full data for (default: 1)
+- `--keep-full <N>`: Number of recent snapshots to keep full rollback capability (default: 5)
+  - **Higher values**: More snapshots support instant rollback
+  - **Lower values**: More aggressive space savings
 - `--dry-run`: Show what would be cleaned without applying
 - `--force`: Skip confirmation prompts
 
 **How It Works:**
-- **Keeps full data** for the most recent N snapshots (fast rollback)
+- **Keeps full data** for the most recent N snapshots (instant rollback capability)
 - **Removes `data.parquet`** from older snapshots (space savings)
-- **Preserves deltas** for reconstruction (maintains rollback capability)
-- **Never breaks** the ability to rollback to any snapshot
+- **Preserves deltas** for reconstruction capability
+- **⚠️ IMPORTANT**: Rollback only works on snapshots with full data
 
 **Examples:**
 ```bash
-# Default: Keep full data for 1 snapshot (aggressive space savings)
+# Default: Keep full data for 5 snapshots (balanced approach)
 tabdiff cleanup --dry-run
-# Output: Would clean baseline and v2, keep v3 with full data
+# Output: Would clean older snapshots, keep 5 most recent with rollback capability
 
-# Conservative: Keep full data for 2 snapshots
+# Conservative: Keep full data for 10 snapshots (prioritize rollback over space)
+tabdiff cleanup --keep-full 10 --dry-run
+
+# Aggressive: Keep full data for 2 snapshots (prioritize space savings)
 tabdiff cleanup --keep-full 2 --dry-run
-# Output: Would clean baseline only, keep v2 and v3 with full data
 
 # Apply cleanup
 tabdiff cleanup --force
@@ -750,10 +738,10 @@ name.tabdiff (tar.zst):
    - Apply delta operations in sequence
    - Rebuild target snapshot state
 
-**Space vs Speed Trade-offs:**
-- `--keep-full 1`: Maximum space savings, delta reconstruction for older snapshots
-- `--keep-full 3`: Balanced approach, fast access to recent snapshots
-- `--keep-full 10`: Conservative, prioritizes speed over storage
+**Rollback vs Storage Trade-offs:**
+- `--keep-full 2`: Maximum space savings, rollback limited to 2 recent snapshots
+- `--keep-full 5`: **Recommended default**, good balance of rollback capability and storage
+- `--keep-full 10`: Conservative, prioritizes rollback capability over storage
 
 ## 🧪 Examples
 

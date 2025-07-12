@@ -145,8 +145,9 @@ pub enum Commands {
     
     /// Clean up old snapshot archives to save space
     Cleanup {
-        /// Number of full archives to keep (default: 1)
-        #[arg(long, default_value = "1")]
+        /// Number of recent snapshots to keep full data for rollback capability (default: 5)
+        /// Recent snapshots with full data can be rolled back, older ones become delta-only
+        #[arg(long, default_value = "5")]
         keep_full: usize,
         
         /// Show what would be cleaned without applying (dry run)

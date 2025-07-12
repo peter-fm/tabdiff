@@ -178,10 +178,8 @@ impl PrettyPrinter {
             println!("├─ ❌ Rows changed: {}", changes.row_changes.total_changes());
             Self::print_row_changes(&changes.row_changes, "│  ");
         } else {
-            println!("├─ ✅ Rows: unchanged");
+            println!("└─ ✅ Rows: unchanged");
         }
-        
-        println!("└─ Total rollback operations: {}", changes.rollback_operations.len());
         
         if changes.schema_changes.has_changes() || changes.row_changes.has_changes() {
             println!();

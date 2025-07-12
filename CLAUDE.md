@@ -171,7 +171,6 @@ The test suite is focused on validating core functionality with accurate asserti
 - `assert_cell_change_detected()` - Validates specific cell changes
 - `assert_row_addition_detected()` - Validates added rows with exact data
 - `assert_row_removal_detected()` - Validates removed rows with exact data
-- `assert_rollback_operations_valid()` - Validates rollback operation correctness
 - `assert_files_equal()` - Validates exact file content matching
 
 ## Development Notes
