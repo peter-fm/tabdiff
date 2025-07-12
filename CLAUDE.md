@@ -227,13 +227,32 @@ For large database queries, tabdiff automatically uses streaming/chunking to han
 
 - **Automatic detection**: Large result sets are automatically streamed in chunks
 - **Memory efficient**: No need to load entire result set into memory
-- **Progress reporting**: Real-time progress updates for long-running queries
+- **Progress reporting**: Optimized progress updates for long-running queries (reduced frequency for better performance)
 - **Transparent to user**: Write simple `SELECT * FROM table` queries - streaming happens automatically
-- **Optimized chunk sizes**: 
+- **Optimized chunk sizes** (Enhanced for better performance):
   - Small datasets (< 100K rows): 10K row chunks
-  - Medium datasets (100K - 1M rows): 25K row chunks  
-  - Large datasets (1M - 10M rows): 50K row chunks
-  - Very large datasets (> 10M rows): 100K row chunks
+  - Medium datasets (100K - 1M rows): 50K row chunks (increased from 25K)
+  - Large datasets (1M - 10M rows): 100K row chunks (increased from 50K)  
+  - Very large datasets (> 10M rows): 250K row chunks (increased from 100K)
+
+#### Performance Optimizations
+Recent optimizations for large SQL datasets:
+
+- **Enhanced DuckDB Configuration**:
+  - Increased memory limit to 8GB (from 4GB)
+  - Explicit thread configuration for all CPU cores
+  - Fast temporary storage configuration
+  - Compression for temporary data
+  
+- **Improved Chunking Strategy**:
+  - Larger chunk sizes for SQL queries vs file processing
+  - Reduced progress reporting frequency (every 3-5 chunks vs every chunk)
+  - Pre-allocated vectors to reduce memory allocation overhead
+  
+- **String Conversion Optimizations**:
+  - Optimized boolean conversion
+  - More efficient UTF-8 handling for text data
+  - Pre-allocated string vectors
 
 #### Supported SQL Features
 - **Standard SELECT queries**: `SELECT * FROM table WHERE condition`

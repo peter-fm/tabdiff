@@ -235,6 +235,50 @@ impl SnapshotCreator {
         Ok(serde_json::to_vec_pretty(&data_structure)?)
     }
 
+    /// Create data.parquet file with streaming to avoid memory accumulation
+    fn create_data_parquet_streaming(
+        &self,
+        data_processor: &mut crate::data::DataProcessor,
+        columns: &[crate::hash::ColumnInfo],
+        progress_callback: Option<&dyn Fn(u64, u64)>,
+    ) -> Result<Vec<u8>> {
+        use std::io::Write;
+        
+        // Create a streaming JSON structure without loading all data into memory
+        let mut buffer = Vec::new();
+        
+        // Write JSON header
+        write!(buffer, "{{\n  \"format\": \"parquet_placeholder\",\n  \"columns\": ")?;
+        serde_json::to_writer(&mut buffer, columns)?;
+        write!(buffer, ",\n  \"rows\": [\n")?;
+        
+        // Stream and write data row by row using the new streaming method
+        let mut first_row = true;
+        
+        data_processor.stream_data_with_progress(
+            |row| {
+                // Add comma separator (except for first row)
+                if !first_row {
+                    write!(buffer, ",\n")?;
+                } else {
+                    first_row = false;
+                }
+                
+                // Write row as JSON
+                write!(buffer, "    ")?;
+                serde_json::to_writer(&mut buffer, &row)?;
+                
+                Ok(())
+            },
+            progress_callback,
+        )?;
+        
+        // Write JSON footer
+        write!(buffer, "\n  ]\n}}")?;
+        
+        Ok(buffer)
+    }
+
     /// Create delta.parquet file with change operations
     fn create_delta_parquet(&self, delta_info: &DeltaInfo) -> Result<Vec<u8>> {
         // For now, serialize as JSON until we implement proper Parquet support
@@ -297,24 +341,23 @@ impl SnapshotCreator {
 
         // Only create data.parquet if full_data is true (implements --full-data functionality)
         if full_data {
-            // Extract full row data for comprehensive change detection and rollback
-            let full_row_data = {
+            // Create data.parquet with streaming to avoid memory accumulation
+            let data_parquet = {
                 let progress_ref = &self.progress;
-                data_processor.extract_data_chunked_with_progress(
+                self.create_data_parquet_streaming(
+                    data_processor,
+                    &data_info.columns,
                     Some(&|processed: u64, total: u64| {
                         if let Some(pb) = &progress_ref.archive_pb {
                             pb.set_length(total);
                             pb.set_position(processed);
-                            if processed % 10000 == 0 || processed == total {
-                                pb.set_message(format!("Extracting data ({}/{})", processed, total));
+                            if processed % 50000 == 0 || processed == total {
+                                pb.set_message(format!("Streaming data ({}/{})", processed, total));
                             }
                         }
                     })
                 )?
             };
-
-            // Create data.parquet with full dataset (enables rollback and detailed change detection)
-            let data_parquet = self.create_data_parquet(&full_row_data, &data_info.columns)?;
             files.push((
                 "data.parquet".to_string(),
                 data_parquet,

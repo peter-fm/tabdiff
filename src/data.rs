@@ -93,11 +93,14 @@ impl DataProcessor {
         };
         
         // Optimize DuckDB for large datasets and performance
-        connection.execute("SET memory_limit='4GB'", [])?;
-        // Use all available CPU cores (DuckDB auto-detects if not specified)
+        connection.execute("SET memory_limit='8GB'", [])?;  // Increased from 4GB
+        // DuckDB auto-detects optimal thread count by default, no need to set explicitly
         connection.execute("SET enable_progress_bar=false", [])?; // Disable for performance
         connection.execute("SET preserve_insertion_order=false", [])?; // Allow reordering for performance
         connection.execute("SET enable_object_cache=true", [])?; // Enable object caching
+        connection.execute("SET temp_directory='/tmp'", [])?; // Use fast temp storage
+        connection.execute("SET max_memory='8GB'", [])?; // Set max memory usage
+        connection.execute("SET force_compression='auto'", [])?; // Enable compression for temp data
         
         Ok(Self { 
             connection, 
@@ -403,6 +406,7 @@ impl DataProcessor {
         }
 
         let mut all_data = Vec::new();
+        all_data.reserve(total_rows as usize); // Pre-allocate the entire vector to prevent reallocations
         let mut processed_rows = 0u64;
 
         // Use adaptive chunk size based on total rows
@@ -427,9 +431,12 @@ impl DataProcessor {
             processed_rows += chunk_data.len() as u64;
             all_data.extend(chunk_data);
 
-            // Report progress if callback provided
+            // Report progress less frequently for better performance (regular files)
             if let Some(callback) = progress_callback {
-                callback(processed_rows, total_rows);
+                // Only report progress every 5 chunks or at the end
+                if processed_rows % (chunk_size as u64 * 5) == 0 || processed_rows >= total_rows {
+                    callback(processed_rows, total_rows);
+                }
             }
         }
         
@@ -461,37 +468,63 @@ impl DataProcessor {
         }
 
         let mut all_data = Vec::new();
+        all_data.reserve(total_rows as usize); // Pre-allocate the entire vector to prevent reallocations
+
+        // For better performance with large datasets, execute the full query once 
+        // and stream through the result set instead of using LIMIT/OFFSET
+        let mut stmt = self.connection.prepare(query)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare streaming query: {}", e)
+            ))?;
+
+        let rows = stmt.query_map([], |row| {
+            let mut string_row = Vec::with_capacity(column_count);
+            for i in 0..column_count {
+                let value: String = match row.get_ref(i)? {
+                    duckdb::types::ValueRef::Null => String::new(),
+                    duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
+                    duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Int(i) => i.to_string(),
+                    duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                    duckdb::types::ValueRef::Float(f) => f.to_string(),
+                    duckdb::types::ValueRef::Double(f) => f.to_string(),
+                    duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
+                    duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                    duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                    duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                    duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                    _ => "<unknown>".to_string(),
+                };
+                string_row.push(value);
+            }
+            Ok(string_row)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to stream query data: {}", e)
+        ))?;
+
         let mut processed_rows = 0u64;
+        let update_frequency = 50_000; // Report progress every 50K rows for smooth updates
 
-        // Use larger chunk sizes for streaming SQL queries since database can handle them efficiently
-        let chunk_size = if total_rows > 10_000_000 {
-            100_000 // Very large datasets: 100K rows per chunk
-        } else if total_rows > 1_000_000 {
-            50_000 // Large datasets: 50K rows per chunk
-        } else if total_rows > 100_000 {
-            25_000 // Medium datasets: 25K rows per chunk
-        } else {
-            self.chunk_size.min(total_rows as usize)
-        };
-
-        while processed_rows < total_rows {
-            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
+        for row_result in rows {
+            let row = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process streaming row: {}", e)
+            ))?;
             
-            // Stream directly from the original query using subquery with LIMIT/OFFSET
-            let chunk_sql = format!(
-                "SELECT * FROM ({}) LIMIT {} OFFSET {}",
-                query,
-                current_chunk_size,
-                processed_rows
-            );
+            all_data.push(row);
+            processed_rows += 1;
 
-            let chunk_data = self.execute_chunk_query(&chunk_sql, column_count)?;
-            processed_rows += chunk_data.len() as u64;
-            all_data.extend(chunk_data);
-
-            // Report progress if callback provided
+            // Report progress at regular intervals
             if let Some(callback) = progress_callback {
-                callback(processed_rows, total_rows);
+                if processed_rows % update_frequency == 0 || processed_rows >= total_rows {
+                    callback(processed_rows, total_rows);
+                }
             }
         }
         
@@ -506,11 +539,11 @@ impl DataProcessor {
             ))?;
         
         let rows = stmt.query_map([], |row| {
-            let mut string_row = Vec::new();
+            let mut string_row = Vec::with_capacity(column_count); // Pre-allocate
             for i in 0..column_count {
                 let value: String = match row.get_ref(i)? {
                     duckdb::types::ValueRef::Null => String::new(),
-                    duckdb::types::ValueRef::Boolean(b) => b.to_string(),
+                    duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
                     duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
                     duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
                     duckdb::types::ValueRef::Int(i) => i.to_string(),
@@ -523,7 +556,7 @@ impl DataProcessor {
                     duckdb::types::ValueRef::Float(f) => f.to_string(),
                     duckdb::types::ValueRef::Double(f) => f.to_string(),
                     duckdb::types::ValueRef::Decimal(d) => d.to_string(),
-                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+                    duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
                     duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
                     duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
                     duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
@@ -538,6 +571,7 @@ impl DataProcessor {
         ))?;
         
         let mut chunk_data = Vec::new();
+        chunk_data.reserve(50000); // Pre-allocate reasonable chunk size
         for row in rows {
             chunk_data.push(row.map_err(|e| crate::error::TabdiffError::data_processing(
                 format!("Failed to process chunk row: {}", e)
@@ -545,6 +579,138 @@ impl DataProcessor {
         }
 
         Ok(chunk_data)
+    }
+
+    /// Stream data row by row with callback for memory efficiency
+    pub fn stream_data_with_progress<F>(
+        &mut self,
+        mut row_callback: F,
+        progress_callback: Option<&dyn Fn(u64, u64)>,
+    ) -> Result<u64>
+    where
+        F: FnMut(Vec<String>) -> Result<()>,
+    {
+        // Get column information
+        let columns = self.get_column_info()?;
+        let column_count = columns.len();
+        
+        if column_count == 0 {
+            return Ok(0);
+        }
+
+        // Get total row count
+        let total_rows = if let Some(ref query) = self.streaming_query.clone() {
+            let count_query = format!("SELECT COUNT(*) FROM ({})", query);
+            self.connection
+                .prepare(&count_query)?
+                .query_row([], |row| row.get(0))?
+        } else {
+            self.connection
+                .prepare("SELECT COUNT(*) FROM data_view")?
+                .query_row([], |row| row.get(0))?
+        };
+
+        if total_rows == 0 {
+            return Ok(0);
+        }
+
+        let mut processed_rows = 0u64;
+
+        if let Some(ref query) = self.streaming_query.clone() {
+            // Stream SQL query results
+            let mut stmt = self.connection.prepare(query)?;
+            
+            let rows = stmt.query_map([], |row| {
+                let mut string_row = Vec::with_capacity(column_count);
+                for i in 0..column_count {
+                    let value: String = match row.get_ref(i)? {
+                        duckdb::types::ValueRef::Null => String::new(),
+                        duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
+                        duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Int(i) => i.to_string(),
+                        duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Float(f) => f.to_string(),
+                        duckdb::types::ValueRef::Double(f) => f.to_string(),
+                        duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                        duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
+                        duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                        duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                        duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                        duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                        _ => "<unknown>".to_string(),
+                    };
+                    string_row.push(value);
+                }
+                Ok(string_row)
+            })?;
+            
+            for row_result in rows {
+                let row = row_result?;
+                row_callback(row)?;
+                processed_rows += 1;
+                
+                // Report progress
+                if let Some(callback) = progress_callback {
+                    if processed_rows % 50000 == 0 || processed_rows >= total_rows {
+                        callback(processed_rows, total_rows);
+                    }
+                }
+            }
+        } else {
+            // Stream from data_view for regular files
+            let mut stmt = self.connection.prepare("SELECT * FROM data_view")?;
+            
+            let rows = stmt.query_map([], |row| {
+                let mut string_row = Vec::with_capacity(column_count);
+                for i in 0..column_count {
+                    let value: String = match row.get_ref(i)? {
+                        duckdb::types::ValueRef::Null => String::new(),
+                        duckdb::types::ValueRef::Boolean(b) => if b { "true".to_string() } else { "false".to_string() },
+                        duckdb::types::ValueRef::TinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::SmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Int(i) => i.to_string(),
+                        duckdb::types::ValueRef::BigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::HugeInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UTinyInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::USmallInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::UBigInt(i) => i.to_string(),
+                        duckdb::types::ValueRef::Float(f) => f.to_string(),
+                        duckdb::types::ValueRef::Double(f) => f.to_string(),
+                        duckdb::types::ValueRef::Decimal(d) => d.to_string(),
+                        duckdb::types::ValueRef::Text(s) => String::from_utf8_lossy(s).into_owned(),
+                        duckdb::types::ValueRef::Blob(b) => format!("<blob:{} bytes>", b.len()),
+                        duckdb::types::ValueRef::Date32(d) => format!("{:?}", d),
+                        duckdb::types::ValueRef::Time64(t, _) => format!("{:?}", t),
+                        duckdb::types::ValueRef::Timestamp(ts, _) => format!("{:?}", ts),
+                        _ => "<unknown>".to_string(),
+                    };
+                    string_row.push(value);
+                }
+                Ok(string_row)
+            })?;
+            
+            for row_result in rows {
+                let row = row_result?;
+                row_callback(row)?;
+                processed_rows += 1;
+                
+                // Report progress
+                if let Some(callback) = progress_callback {
+                    if processed_rows % 50000 == 0 || processed_rows >= total_rows {
+                        callback(processed_rows, total_rows);
+                    }
+                }
+            }
+        }
+        
+        Ok(processed_rows)
     }
 
     /// Extract data by columns
@@ -725,64 +891,49 @@ impl DataProcessor {
         }
 
         let mut all_hashes = Vec::new();
+        all_hashes.reserve(total_rows as usize); // Pre-allocate to prevent reallocations
         let mut processed_rows = 0u64;
         let start_time = std::time::Instant::now();
 
-        // Use larger chunk sizes for streaming SQL queries
-        let chunk_size = if total_rows > 10_000_000 {
-            100_000 // Very large datasets: 100K rows per chunk
-        } else if total_rows > 1_000_000 {
-            50_000 // Large datasets: 50K rows per chunk
-        } else if total_rows > 100_000 {
-            25_000 // Medium datasets: 25K rows per chunk
-        } else {
-            self.chunk_size.min(total_rows as usize)
-        };
+        // Execute the full query once and stream through results (no chunking needed)
 
         let column_list = columns.iter()
             .map(|c| format!("\"{}\"", c.name))
             .collect::<Vec<_>>()
             .join(", ");
 
-        while processed_rows < total_rows {
-            let current_chunk_size = chunk_size.min((total_rows - processed_rows) as usize);
-            
-            // Stream directly from the original query using subquery with LIMIT/OFFSET
-            let chunk_sql = format!(
-                "SELECT {} FROM ({}) LIMIT {} OFFSET {}",
-                column_list,
-                query,
-                current_chunk_size,
-                processed_rows
-            );
-
-            let mut stmt = self.connection.prepare(&chunk_sql)
-                .map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to prepare streaming hash query: {}", e)
-                ))?;
-
-            let rows = stmt.query_map([], |row| {
-                self.extract_row_values_for_hashing(row, &columns)
-            }).map_err(|e| crate::error::TabdiffError::data_processing(
-                format!("Failed to create streaming row iterator: {}", e)
+        // Execute the full query once and stream through results (no LIMIT/OFFSET)
+        let streaming_sql = format!("SELECT {} FROM ({})", column_list, query);
+        let mut stmt = self.connection.prepare(&streaming_sql)
+            .map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to prepare streaming hash query: {}", e)
             ))?;
 
-            // Process each row in the chunk
-            for (chunk_row_index, row_result) in rows.enumerate() {
-                let row_values = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
-                    format!("Failed to process streaming row {}: {}", chunk_row_index, e)
-                ))?;
-                
-                let hash_hex = self.compute_row_hash(&row_values);
-                
-                all_hashes.push(crate::hash::RowHash {
-                    row_index: processed_rows + chunk_row_index as u64,
-                    hash: hash_hex,
-                });
-            }
+        let rows = stmt.query_map([], |row| {
+            self.extract_row_values_for_hashing(row, &columns)
+        }).map_err(|e| crate::error::TabdiffError::data_processing(
+            format!("Failed to create streaming row iterator: {}", e)
+        ))?;
 
-            processed_rows += current_chunk_size as u64;
-            self.report_hash_progress(processed_rows, total_rows, start_time, &progress_callback);
+        // Process each row from the single streaming query
+        for row_result in rows {
+            let row_values = row_result.map_err(|e| crate::error::TabdiffError::data_processing(
+                format!("Failed to process streaming row {}: {}", processed_rows, e)
+            ))?;
+            
+            let hash_hex = self.compute_row_hash(&row_values);
+            
+            all_hashes.push(crate::hash::RowHash {
+                row_index: processed_rows,
+                hash: hash_hex,
+            });
+
+            processed_rows += 1;
+            
+            // Report progress at regular intervals for better performance
+            if processed_rows % 10000 == 0 || processed_rows >= total_rows {
+                self.report_hash_progress(processed_rows, total_rows, start_time, &progress_callback);
+            }
         }
         
         // Final newline after progress
