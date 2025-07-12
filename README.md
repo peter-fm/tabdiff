@@ -404,13 +404,11 @@ Chain structure:
 
 ├─ v2 (seq: 1)
    └─ Parent: baseline
-   └─ Can reconstruct parent: ✅
    └─ Delta size: 536 bytes
    └─ Archive size: 1505 bytes
 
 ├─ v3 (seq: 2)
    └─ Parent: v2
-   └─ Can reconstruct parent: ✅
    └─ Delta size: 698 bytes
    └─ Archive size: 1604 bytes
 
@@ -434,7 +432,7 @@ tabdiff cleanup [options]
 **How It Works:**
 - **Keeps full data** for the most recent N snapshots (instant rollback capability)
 - **Removes `data.parquet`** from older snapshots (space savings)
-- **Preserves deltas** for reconstruction capability
+- **Preserves deltas** for future enhancement capabilities
 - **⚠️ IMPORTANT**: Rollback only works on snapshots with full data
 
 **Examples:**
@@ -458,7 +456,7 @@ tabdiff cleanup --force
 📊 Cleanup analysis:
    • Snapshots for data cleanup: 2
    • Estimated space savings: 1832 bytes (≈70% reduction)
-   • Archives will retain deltas for reconstruction
+   • Archives will retain deltas for future enhancements
 
 🔍 Snapshots that would have data cleaned up:
    • v2 (seq: 1, estimated savings: 1053 bytes)
@@ -727,15 +725,13 @@ name.tabdiff (tar.zst):
 **Delta Chain Architecture:**
 - Each snapshot stores both **full data** and **changes from parent**
 - Cleanup removes `data.parquet` but preserves `delta.parquet`
-- Any snapshot can be reconstructed by walking the delta chain
-- Provides optimal balance between speed and storage efficiency
+- Cleanup removes full data but preserves metadata and deltas
+- Provides optimal balance between rollback capability and storage efficiency
 
-**Reconstruction Process:**
-1. **Fast Path**: Use `data.parquet` if available (recent snapshots)
-2. **Delta Path**: Reconstruct from chain if `data.parquet` was cleaned up
-   - Start from nearest snapshot with full data
-   - Apply delta operations in sequence
-   - Rebuild target snapshot state
+**Current Limitations:**
+1. **Rollback capability**: Only works on snapshots with full data (recent snapshots)
+2. **Diff capability**: Works on all snapshots (loads full data from archives)
+3. **Future enhancement**: Delta reconstruction could enable rollback for all snapshots
 
 **Rollback vs Storage Trade-offs:**
 - `--keep-full 2`: Maximum space savings, rollback limited to 2 recent snapshots
@@ -898,12 +894,8 @@ tabdiff cleanup --dry-run
 tabdiff cleanup --force
 # Output: Cleaned 2 snapshots, saved 1832 bytes
 
-# Verify rollback still works after cleanup
-tabdiff rollback employees.csv --to baseline --dry-run
-# Output: Shows exact changes needed (using delta reconstruction)
-
-# Rollback works perfectly even after cleanup!
-tabdiff rollback employees.csv --to baseline --force
+# Note: Rollback only works on snapshots with full data (kept recent snapshots)
+# Cleaned snapshots lose rollback capability but retain diff functionality
 ```
 
 ### Rollback Safety Examples
