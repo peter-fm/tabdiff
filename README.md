@@ -308,7 +308,6 @@ tabdiff status <input> [options]
 │        └─ count: '75' → '80'
 │  ├─ Added rows: 1
 │  │  └─ Indices: 5
-└─ Total rollback operations: 3
 ```
 
 ```json
